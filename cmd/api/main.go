@@ -16,9 +16,15 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 
+	"github.com/KarthikReddy8809/catalift/internal/auth"
+	"github.com/KarthikReddy8809/catalift/internal/catalogue"
+	"github.com/KarthikReddy8809/catalift/internal/channels"
 	"github.com/KarthikReddy8809/catalift/internal/config"
+	"github.com/KarthikReddy8809/catalift/internal/exports"
+	"github.com/KarthikReddy8809/catalift/internal/generation"
 	"github.com/KarthikReddy8809/catalift/internal/health"
 	"github.com/KarthikReddy8809/catalift/internal/httpapi"
+	"github.com/KarthikReddy8809/catalift/internal/listings"
 	"github.com/KarthikReddy8809/catalift/internal/store"
 	"github.com/KarthikReddy8809/catalift/internal/telemetry"
 )
@@ -54,9 +60,9 @@ func run() error {
 		}
 	}()
 
-	// The store is optional at this stage of a service's life: with no
-	// DATABASE_URL the service runs and /readyz has nothing to check.
+	// With no DATABASE_URL the service runs health routes only; /v1 needs the store.
 	var checkers []health.Checker
+	var deps *httpapi.Deps
 	if cfg.DatabaseURL != "" {
 		st, err := store.Open(ctx, cfg.DatabaseURL)
 		if err != nil {
@@ -64,6 +70,10 @@ func run() error {
 		}
 		defer st.Close()
 		checkers = append(checkers, st)
+		deps, err = buildDeps(ctx, cfg, st, logger)
+		if err != nil {
+			return err
+		}
 	}
 
 	reg := prometheus.NewRegistry()
@@ -71,10 +81,10 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           httpapi.New(logger, version, reg, checkers...),
+		Handler:           httpapi.NewWithAPI(logger, version, reg, deps, checkers...),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      120 * time.Second, // photo batches of up to 200 MB
 		IdleTimeout:       60 * time.Second,
 	}
 
@@ -100,4 +110,30 @@ func run() error {
 	}
 	logger.Info("stopped")
 	return nil
+}
+
+// buildDeps loads the channel files, re-checks listings whose channel file
+// changed (D7) and builds the services the /v1 routes call.
+func buildDeps(ctx context.Context, cfg config.Config, st *store.Store, logger *slog.Logger) (*httpapi.Deps, error) {
+	set, err := channels.LoadDir(cfg.ChannelsDir)
+	if err != nil {
+		return nil, fmt.Errorf("channels: %w", err)
+	}
+	for _, e := range set.Errors {
+		logger.Error("channel file disabled", "file", e.File, "channel", e.ID, "reason", e.Error)
+	}
+	ls := listings.NewService(st.Pool, set)
+	if err := ls.Recheck(ctx); err != nil {
+		return nil, fmt.Errorf("recheck listings: %w", err)
+	}
+	return &httpapi.Deps{
+		Auth:          auth.NewService(store.New(st.Pool)),
+		SignInLimiter: auth.NewLimiter(10, 15*time.Minute, time.Now),
+		Catalogue:     catalogue.NewService(st.Pool, cfg.DataDir),
+		Generation:    generation.NewService(st.Pool, set),
+		Listings:      ls,
+		Exports:       exports.NewService(st.Pool, set, cfg.DataDir),
+		Channels:      set,
+		SecureCookies: cfg.SecureCookies,
+	}, nil
 }

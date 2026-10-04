@@ -35,7 +35,8 @@ describe("design gallery", () => {
     renderRoute("/__design");
     expect(await screen.findByRole("heading", { name: "Design gallery" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "S-01 API health" })).toBeInTheDocument();
-    expect(screen.getByText("loading")).toBeInTheDocument();
+    // Several screens have a loading state; each one is a link in the index.
+    expect(screen.getAllByText("loading").length).toBeGreaterThan(0);
   });
 
   it("renders the chosen state with the state switcher", async () => {

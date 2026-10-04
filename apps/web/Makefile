@@ -9,8 +9,10 @@ SKIPPED := $(STATE)/.skipped
 # CI job and a manual target, not part of check.
 GATES := format-check lint typecheck test vuln
 # Files each gate looks at: tracked plus untracked, minus ignored (so a fresh scaffold counts).
-SRC_FILES = $$(git ls-files -co --exclude-standard -- 'src/*.ts' 'src/*.tsx' 'e2e/*.ts' '*.config.ts')
-FMT_FILES = $$(git ls-files -co --exclude-standard -- '*.ts' '*.tsx' '*.js' '*.json' '*.css' '*.md' '*.yml' '*.yaml' '*.html' | grep -v '^pnpm-lock.yaml$$' || true)
+# Tracked and new files that still exist (a deletion not yet committed is skipped).
+EXISTING = while read -r f; do [ -e "$$f" ] && echo "$$f"; done
+SRC_FILES = $$(git ls-files -co --exclude-standard -- 'src/*.ts' 'src/*.tsx' 'e2e/*.ts' '*.config.ts' | $(EXISTING))
+FMT_FILES = $$(git ls-files -co --exclude-standard -- '*.ts' '*.tsx' '*.js' '*.json' '*.css' '*.md' '*.yml' '*.yaml' '*.html' | grep -v '^pnpm-lock.yaml$$' | $(EXISTING) || true)
 TEST_FILES = $$(git ls-files -co --exclude-standard -- 'src/*.test.ts' 'src/*.test.tsx')
 E2E_FILES = $$(git ls-files -co --exclude-standard -- 'e2e/*.spec.ts' | grep -v '^e2e/visual/' || true)
 VISUAL_FILES = $$(git ls-files -co --exclude-standard -- 'e2e/visual/*.spec.ts')

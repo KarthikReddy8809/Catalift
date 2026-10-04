@@ -22,7 +22,7 @@ define skip
 { mkdir -p $(STATE); echo "$(1): SKIPPED ($(2) not installed)"; echo "$(1) $(2)" >> $(SKIPPED); exit 0; }
 endef
 
-.PHONY: help setup tools dev build check check-file fmt fmt-check vet lint test test-integration vuln fix migrate migrate-verify migrate-down migrate-status sqlc doctor clean db db-reset
+.PHONY: help setup tools dev build check check-file fmt fmt-check vet lint test test-integration vuln fix migrate migrate-verify migrate-down migrate-status sqlc seed-demo doctor clean db db-reset
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
@@ -74,10 +74,10 @@ test: ## Unit tests with race detector
 	[ "$$n" -gt 0 ] || { echo "test: 0 packages, nothing checked" >&2; exit 1; }; \
 	set -o pipefail; go test -race -count=1 -cover $(PKG) 2>&1 | tail -60 && echo "test: $$n packages checked"
 
-test-integration: ## Store tests against Postgres (needs make db and make migrate; a CI job, not part of check)
-	@n=$$(go list -tags=integration ./internal/store/... | wc -l | tr -d ' '); \
+test-integration: ## Store and API flow tests against Postgres (needs make db and make migrate; a CI job, not part of check)
+	@n=$$(go list -tags=integration ./internal/... | wc -l | tr -d ' '); \
 	[ "$$n" -gt 0 ] || { echo "test-integration: 0 packages, nothing checked" >&2; exit 1; }; \
-	set -o pipefail; DATABASE_URL=$(DATABASE_URL) go test -race -count=1 -tags=integration ./internal/store/... 2>&1 | tail -60 && echo "test-integration: $$n packages checked"
+	set -o pipefail; DATABASE_URL=$(DATABASE_URL) go test -race -count=1 -tags=integration ./internal/... 2>&1 | tail -60 && echo "test-integration: $$n packages checked"
 
 vuln: ## govulncheck over the module graph
 	@command -v govulncheck >/dev/null || $(call skip,vuln,govulncheck); \
@@ -133,6 +133,13 @@ migrate-verify: ## Every Down runs and restores the schema: up, snapshot, down, 
 
 migrate-status: ## goose status
 	goose -dir db/migrations postgres "$(DATABASE_URL)" status
+
+# Local demo accounts only; never run against prod (ground rule 4).
+DEMO_PASSWORD ?= catalift-demo-local
+seed-demo: ## Create the local demo seller and reviewer (password DEMO_PASSWORD)
+	@for who in seller reviewer; do \
+	  printf '%s' "$(DEMO_PASSWORD)" | DATABASE_URL=$(DATABASE_URL) go run ./cmd/admin create-user $$who@example.com $$who || true; \
+	done
 
 sqlc: ## Regenerate typed queries
 	sqlc generate

@@ -18,13 +18,19 @@ function renderAt(path: string) {
 }
 
 describe("App", () => {
-  it("renders the home route with the health card", async () => {
-    server.use(http.get("*/healthz", () => HttpResponse.json({ status: "ok", version: "test" })));
+  it("sends a visitor with no session from / to sign-in", async () => {
+    server.use(
+      http.get("*/v1/sessions/current", () =>
+        HttpResponse.json(
+          { error: { code: "unauthorized", message: "Sign in to continue.", request_id: "r1" } },
+          { status: 401 },
+        ),
+      ),
+    );
 
     renderAt("/");
 
-    expect(await screen.findByRole("heading", { name: "API health" })).toBeInTheDocument();
-    expect(await screen.findByText("test")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument();
   });
 

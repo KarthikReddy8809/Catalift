@@ -3,15 +3,24 @@ import {
   createRootRouteWithContext,
   createRoute,
   createRouter,
+  redirect,
   type RouterHistory,
 } from "@tanstack/react-router";
+import { z } from "zod";
 
-import { HomePage } from "@/app/HomePage";
+import { AppShell } from "@/app/AppShell";
 import { NotFound } from "@/app/NotFound";
 import { RootLayout } from "@/app/RootLayout";
 import { RouteError } from "@/app/RouteError";
 import { GalleryIndex, GalleryScreen } from "@/design/Gallery";
 import { parseGallerySearch } from "@/design/registry";
+import { sessionQueryOptions } from "@/features/auth/api";
+import { SignInPage } from "@/features/auth/pages/SignInPage";
+import { ProductsPage } from "@/features/catalogue/pages/ProductsPage";
+import { UploadPage } from "@/features/catalogue/pages/UploadPage";
+import { ChannelsPage } from "@/features/channels/pages/ChannelsPage";
+import { ExportPage } from "@/features/exports/pages/ExportPage";
+import { ReviewPage } from "@/features/listings/pages/ReviewPage";
 
 // Code-based routes. A route that needs data adds
 // `loader: ({ context }) => context.queryClient.ensureQueryData(options)`
@@ -28,11 +37,85 @@ const rootRoute = createRootRouteWithContext<RouterContext>()({
   notFoundComponent: NotFound,
 });
 
+// "/" sends a signed-in person to Products and everyone else to sign-in.
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: HomePage,
+  beforeLoad: async ({ context }) => {
+    const session = await context.queryClient.query(sessionQueryOptions());
+    // TanStack Router's redirect is thrown by design.
+    // eslint-disable-next-line @typescript-eslint/only-throw-error
+    throw redirect({ to: session ? "/products" : "/sign-in" });
+  },
 });
+
+const signInRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/sign-in",
+  validateSearch: (s: Record<string, unknown>) =>
+    z.object({ expired: z.boolean().optional() }).parse(s),
+  component: function SignInRoute() {
+    const { expired } = signInRoute.useSearch();
+    return <SignInPage expired={expired === true} />;
+  },
+});
+
+// Every signed-in page sits in the app frame; no session goes to sign-in.
+const appRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  id: "app",
+  beforeLoad: async ({ context }) => {
+    const session = await context.queryClient.query(sessionQueryOptions());
+    if (!session) {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw redirect({ to: "/sign-in" });
+    }
+  },
+  component: AppShell,
+});
+
+const uploadRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/upload",
+  component: UploadPage,
+});
+
+const productsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/products",
+  validateSearch: (s: Record<string, unknown>) =>
+    z.object({ upload: z.coerce.string().optional() }).parse(s),
+  component: function ProductsRoute() {
+    const { upload } = productsRoute.useSearch();
+    return <ProductsPage upload={upload} />;
+  },
+});
+
+const reviewRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/review",
+  component: ReviewPage,
+});
+
+const exportRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/export",
+  component: ExportPage,
+});
+
+const channelsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/channels",
+  component: ChannelsPage,
+});
+
+const appTree = appRoute.addChildren([
+  uploadRoute,
+  productsRoute,
+  reviewRoute,
+  exportRoute,
+  channelsRoute,
+]);
 
 // The design gallery: every *.screen.tsx in every state, inside this layout.
 // On in `vite dev`, and in a build only with VITE_DESIGN_GALLERY=1 (the
@@ -58,7 +141,9 @@ const galleryScreenRoute = createRoute({
 });
 
 export const routeTree = rootRoute.addChildren(
-  designGalleryEnabled ? [indexRoute, galleryIndexRoute, galleryScreenRoute] : [indexRoute],
+  designGalleryEnabled
+    ? [indexRoute, signInRoute, appTree, galleryIndexRoute, galleryScreenRoute]
+    : [indexRoute, signInRoute, appTree],
 );
 
 interface AppRouterOptions {

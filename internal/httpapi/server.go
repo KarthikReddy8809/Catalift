@@ -20,7 +20,16 @@ import (
 // recovery, request metrics, request log, tracing, then the mux. reg is the
 // Prometheus registry /metrics serves; checkers are what /readyz pings.
 func New(logger *slog.Logger, version string, reg *prometheus.Registry, checkers ...health.Checker) http.Handler {
+	return NewWithAPI(logger, version, reg, nil, checkers...)
+}
+
+// NewWithAPI is New plus the /v1 routes when deps is not nil.
+func NewWithAPI(logger *slog.Logger, version string, reg *prometheus.Registry, deps *Deps, checkers ...health.Checker) http.Handler {
 	mux := http.NewServeMux()
+	if deps != nil {
+		a := &api{Deps: *deps, log: logger, idem: newIdempotency(time.Now)}
+		a.routes(mux)
+	}
 	h := health.New(version, checkers...)
 	mux.HandleFunc("GET /healthz", h.Live)
 	mux.HandleFunc("GET /readyz", h.Ready)
@@ -42,8 +51,11 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // WriteError writes a JSON error envelope. Never leak internal detail here.
+// The request id comes from the response header the RequestID middleware set.
 func WriteError(w http.ResponseWriter, status int, code, message string) {
-	WriteJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
+	WriteJSON(w, status, map[string]any{"error": map[string]string{
+		"code": code, "message": message, "request_id": w.Header().Get(middleware.HeaderRequestID),
+	}})
 }
 
 func requestLog(logger *slog.Logger, next http.Handler) http.Handler {

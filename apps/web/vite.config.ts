@@ -10,7 +10,15 @@ export default defineConfig({
   resolve: {
     alias: { "@": path.resolve(import.meta.dirname, "src") },
   },
-  server: { port: 5173, strictPort: true },
+  // The dev proxy stands in for the production reverse proxy (HLD section 3):
+  // web app and API share one origin, so the API needs no CORS.
+  server: {
+    port: 5173,
+    strictPort: true,
+    proxy: Object.fromEntries(
+      ["/v1", "/healthz", "/readyz"].map((p) => [p, "http://localhost:8080"]),
+    ),
+  },
   preview: { port: 4173, strictPort: true },
   build: {
     sourcemap: true,

@@ -1,4 +1,4 @@
-# API: Catalift API v1.0.0
+# API: Catalift API v1.1.0
 
 Generated from `api/openapi.yaml` by openapi-spec (scripts/api_doc.py). Edit the spec, not this file.
 

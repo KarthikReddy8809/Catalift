@@ -1,0 +1,37 @@
+# Amazon-style marketplace rules (REQ-018). Draft values for the owner's
+# sign-off (Q-003): modelled on public apparel guidance, not Amazon's own
+# policy. A change here re-checks every listing at start-up (D7).
+id: amazon_style
+name: Amazon-style
+title_max_length: 200
+required_attributes: [colour, fit]
+banned_words:
+  - best seller
+  - bestseller
+  - free shipping
+  - guaranteed
+  - "100% quality"
+  - cheapest
+  - limited time
+  - sale
+  - discount
+  - offer
+  - eco-friendly
+  - anti-bacterial
+  - hot item
+  - top rated
+  - easy care
+export_columns:
+  - { header: sku, field: sku }
+  - { header: item_name, field: title }
+  - { header: bullet_point_1, field: bullet_1 }
+  - { header: bullet_point_2, field: bullet_2 }
+  - { header: bullet_point_3, field: bullet_3 }
+  - { header: bullet_point_4, field: bullet_4 }
+  - { header: bullet_point_5, field: bullet_5 }
+  - { header: product_description, field: description }
+  - { header: color_name, field: colour }
+  - { header: pattern_type, field: pattern }
+  - { header: sleeve_type, field: sleeve }
+  - { header: neck_style, field: neckline }
+  - { header: fit_type, field: fit }

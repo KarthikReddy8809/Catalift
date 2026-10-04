@@ -1,0 +1,25 @@
+# The brand's own website (REQ-018). Draft values for sign-off (Q-003): a
+# lighter set than the marketplace.
+id: own_website
+name: Own website
+title_max_length: 120
+required_attributes: [colour]
+banned_words:
+  - best seller
+  - guaranteed
+  - cheapest
+  - easy care
+export_columns:
+  - { header: sku, field: sku }
+  - { header: title, field: title }
+  - { header: bullet_1, field: bullet_1 }
+  - { header: bullet_2, field: bullet_2 }
+  - { header: bullet_3, field: bullet_3 }
+  - { header: bullet_4, field: bullet_4 }
+  - { header: bullet_5, field: bullet_5 }
+  - { header: description, field: description }
+  - { header: colour, field: colour }
+  - { header: pattern, field: pattern }
+  - { header: sleeve, field: sleeve }
+  - { header: neckline, field: neckline }
+  - { header: fit, field: fit }

@@ -4,76 +4,91 @@
 /* Dark follows the .dark class the app sets, or data-theme="dark" (design gallery and review shots). */
 @custom-variant dark (&:is(.dark *, [data-theme="dark"] *));
 
-/* shadcn/ui tokens (new-york, neutral). Components use these by role;
-   a raw colour in a className is a review finding. */
+/* Catalift theme colours, from the owner's palette (2026-10-04):
+   Primary #16A34A, Secondary #22C55E, Accent #DCFCE7, Background #F9FDF9,
+   Text #1F2937. Ratios measured with the accessibility skill's contrast.py.
+   - Filled buttons use #15803D: white text on #16A34A is 3.30:1, below the
+     4.5:1 floor; #15803D gives 5.02:1 and reads as the same green.
+   - #16A34A itself (--brand) is for icons, the current nav item, rings, chart
+     bars and the logo: 3.30:1 on white, above the 3:1 floor for non-text.
+   - #22C55E (--brand-bright) never carries white text (2.28:1).
+   Components use these by role; a raw colour in a className is a review finding. */
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --radius: 0.75rem;
+  --background: #f9fdf9;
+  --foreground: #1f2937;
+  --card: #ffffff;
+  --card-foreground: #1f2937;
+  --popover: #ffffff;
+  --popover-foreground: #1f2937;
+  --primary: #15803d;
+  --primary-foreground: #ffffff;
+  --secondary: #dcfce7;
+  --secondary-foreground: #166534;
+  --muted: #eef6ef;
+  --muted-foreground: #5b6472;
+  --accent: #dcfce7;
+  --accent-foreground: #166534;
+  --destructive: #dc2626;
+  --border: #dce9df;
+  --input: #7f9886;
+  --ring: #16a34a;
+  --brand: #16a34a;
+  --brand-bright: #22c55e;
+  --brand-soft: #dcfce7;
+  --chart-1: #16a34a;
+  --chart-2: #22c55e;
+  --chart-3: #86efac;
+  --chart-4: #15803d;
+  --chart-5: #dcfce7;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #1f2937;
+  --sidebar-primary: #15803d;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #dcfce7;
+  --sidebar-accent-foreground: #166534;
+  --sidebar-border: #dce9df;
+  --sidebar-ring: #16a34a;
 }
 
+/* Dark: derived from the same hue. Surfaces step up in lightness for
+   elevation; the green brightens to #22C55E with dark text (6.54:1). */
 .dark,
 [data-theme="dark"] {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
+  --background: #0f1712;
+  --foreground: #e8f3eb;
+  --card: #16211a;
+  --card-foreground: #e8f3eb;
+  --popover: #16211a;
+  --popover-foreground: #e8f3eb;
+  --primary: #22c55e;
+  --primary-foreground: #052e16;
+  --secondary: #14532d;
+  --secondary-foreground: #dcfce7;
+  --muted: #1c2a21;
+  --muted-foreground: #9ca3af;
+  --accent: #14532d;
+  --accent-foreground: #dcfce7;
+  --destructive: #f87171;
   --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --input: oklch(1 0 0 / 22%);
+  --ring: #22c55e;
+  --brand: #22c55e;
+  --brand-bright: #4ade80;
+  --brand-soft: #14532d;
+  --chart-1: #22c55e;
+  --chart-2: #4ade80;
+  --chart-3: #86efac;
+  --chart-4: #16a34a;
+  --chart-5: #14532d;
+  --sidebar: #16211a;
+  --sidebar-foreground: #e8f3eb;
+  --sidebar-primary: #22c55e;
+  --sidebar-primary-foreground: #052e16;
+  --sidebar-accent: #14532d;
+  --sidebar-accent-foreground: #dcfce7;
   --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --sidebar-ring: #22c55e;
 }
 
 @theme inline {
@@ -99,6 +114,9 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-brand: var(--brand);
+  --color-brand-bright: var(--brand-bright);
+  --color-brand-soft: var(--brand-soft);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);

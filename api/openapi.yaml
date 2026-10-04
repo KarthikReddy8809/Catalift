@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Catalift API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     The REST API the Catalift web app uses: sellers upload products and start generation, reviewers edit,
     regenerate, approve and export listings, and both see AI cost and the budget state (ADR-0007).
@@ -989,7 +989,7 @@ components:
       example: { files: [KU-104_front.jpg, KU-104-back.jpg] }
     ImagesResult:
       type: object
-      required: [attached, unmatched_files, products_missing_image]
+      required: [attached, unmatched_files, rejected_files, products_missing_image]
       properties:
         attached:
           type: array
@@ -1001,12 +1001,22 @@ components:
               sku: { type: string }
               position: { type: integer, minimum: 1 }
         unmatched_files: { type: array, items: { type: string } }
+        rejected_files:
+          type: array
+          description: Photos that matched a SKU but were refused (not JPEG, PNG or WebP; over 10 MB; over 50 megapixels).
+          items:
+            type: object
+            required: [file_name, reason]
+            properties:
+              file_name: { type: string }
+              reason: { type: string }
         products_missing_image: { type: array, items: { type: string }, description: SKUs still without an image; they are not sent for detection. }
       example:
         attached:
           - { file_name: KU-104_front.jpg, sku: KU-104, position: 1 }
           - { file_name: KU-104-back.jpg, sku: KU-104, position: 2 }
         unmatched_files: [holiday-banner.png]
+        rejected_files: [{ file_name: KU-105.gif, reason: 'not a JPEG, PNG or WebP image' }]
         products_missing_image: [KU-210]
     ProductAttributes:
       type: object
@@ -1129,7 +1139,7 @@ components:
       example: { rule: title_max_length, field: title, message: 'Title is 212 characters; the limit is 200.' }
     Listing:
       type: object
-      required: [id, product_id, sku, channel, status, failure_reason, version, title, bullets, description, rule_status, rule_failures, approved, approved_at, approved_by]
+      required: [id, product_id, sku, channel, status, failure_reason, version, title, bullets, description, rule_status, rule_failures, approved, approved_at, approved_by, attributes, attributes_revision, latest_regeneration]
       properties:
         id: { type: string }
         product_id: { type: string }
@@ -1150,6 +1160,24 @@ components:
         approved: { type: boolean, description: True only while an approval matches the current version. }
         approved_at: { type: [string, 'null'], format: date-time }
         approved_by: { type: [string, 'null'], description: Email of the approving reviewer. }
+        attributes:
+          type: object
+          description: The product's current attributes, which the reviewer checks the text against (v1.1).
+          required: [colour, pattern, sleeve, neckline, fit]
+          properties:
+            colour: { type: [string, 'null'] }
+            pattern: { type: [string, 'null'] }
+            sleeve: { type: [string, 'null'] }
+            neckline: { type: [string, 'null'] }
+            fit: { type: [string, 'null'] }
+        attributes_revision: { type: integer, minimum: 0, description: 'Send it to PATCH /products/{product_id}/attributes to correct them (v1.1).' }
+        latest_regeneration:
+          type: [object, 'null']
+          description: The newest regeneration request on this listing, so the grid can show a pending or superseded one (v1.1).
+          required: [field, status]
+          properties:
+            field: { type: string }
+            status: { $ref: '#/components/schemas/RegenerationStatus' }
       example:
         id: '412'
         product_id: '104'
@@ -1166,6 +1194,9 @@ components:
         approved: true
         approved_at: 2026-10-04T10:12:00Z
         approved_by: reviewer@catalift.example
+        attributes: { colour: navy, pattern: solid, sleeve: three-quarter sleeve, neckline: round neck, fit: regular }
+        attributes_revision: 2
+        latest_regeneration: null
     ListingPage:
       type: object
       required: [data, page]
@@ -1189,6 +1220,9 @@ components:
             approved: false
             approved_at: null
             approved_by: null
+            attributes: { colour: navy, pattern: solid, sleeve: three-quarter sleeve, neckline: round neck, fit: regular }
+            attributes_revision: 2
+            latest_regeneration: { field: title, status: queued }
         page: { next_cursor: null, has_more: false }
     ListingUpdate:
       type: object
@@ -1276,7 +1310,7 @@ components:
         skipped: [{ listing_id: '413', reason: failing_rules }]
     Channel:
       type: object
-      required: [id, name, enabled, load_error, title_max_length, required_attributes, export_headers, last_recheck]
+      required: [id, name, enabled, load_error, title_max_length, required_attributes, banned_words, export_headers, last_recheck, listings_total, listings_approved]
       properties:
         id: { type: string }
         name: { type: string }
@@ -1284,6 +1318,9 @@ components:
         load_error: { type: [string, 'null'], description: Why the file failed to load; the channel is disabled (D8). }
         title_max_length: { type: [integer, 'null'] }
         required_attributes: { type: array, items: { type: string } }
+        banned_words: { type: array, items: { type: string }, description: Words and phrases the rules engine refuses (v1.1). }
+        listings_total: { type: integer, description: Listings on this channel (v1.1). }
+        listings_approved: { type: integer, description: Listings approved at their current version; the export page shows readiness from these (v1.1). }
         export_headers: { type: array, items: { type: string } }
         last_recheck:
           type: [object, 'null']
@@ -1300,6 +1337,9 @@ components:
         load_error: null
         title_max_length: 200
         required_attributes: [colour, fit]
+        banned_words: [best seller, guaranteed]
+        listings_total: 300
+        listings_approved: 296
         export_headers: [sku, item_name, bullet_point_1, bullet_point_2, bullet_point_3, bullet_point_4, bullet_point_5, product_description, color, fit_type]
         last_recheck: { config_hash: 9b1f2c, listings_rechecked: 300, approvals_cleared: 4, created_at: 2026-10-04T07:00:00Z }
     ChannelPage:

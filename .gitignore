@@ -26,3 +26,6 @@ infra/.plans/
 infra/**/.terraform/
 *.tfstate*
 infra/envs/prod/terraform.tfvars
+
+# Uploaded photos and export files from local runs (DATA_DIR)
+/data/
