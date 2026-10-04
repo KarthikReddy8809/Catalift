@@ -1,0 +1,28 @@
+
+# Bearing
+.scratch/
+deliverables/
+.bearing/state/
+.claude/settings.local.json
+# 0-byte placeholders the Claude Code sandbox holds while a command runs
+/.bashrc
+/.bash_profile
+/.zshrc
+/.zprofile
+/.profile
+/.ripgreprc
+/.gitconfig
+# Go: build output and the pinned tools make tools installs.
+bin/
+# make dev reads .env, copied from .env.example; the copy holds real keys.
+.env
+.env.*
+!.env.example
+
+# Monorepo parts (eng review D4)
+node_modules/
+apps/web/dist/
+infra/.plans/
+infra/**/.terraform/
+*.tfstate*
+infra/envs/prod/terraform.tfvars

@@ -1,0 +1,162 @@
+Table,Column,Type,Nullable,Key,Default,References,On Delete,Personal Data,Description,Why
+users,id,bigint,No,PK,identity,,,No,"Surrogate key; referenced by sessions, uploads, runs, approvals and requests.",ADR-0006: approvals record the reviewer who made them.
+users,email,text,No,UK,,,,Yes,"Sign-in address, unique ignoring case.",ADR-0006: seeded accounts sign in with email and password.
+users,role,user_role,No,,,,,No,seller or reviewer; checked by the API on every route.,"ADR-0006 and AC-US-00-009-5: only reviewers approve, edit, regenerate and export."
+users,password_hash,text,No,,,,,Yes,"Password hash (argon2id or bcrypt, chosen in the LLD), never the password.",ADR-0006: passwords stored hashed.
+users,created_at,timestamptz,No,,now(),,,No,When the row was written.,Rule: audit columns (database/references/postgres.md).
+users,updated_at,timestamptz,No,,now(),,,No,"Last change to this row, set by the repository on every update.","Rule: audit columns, set by the repository on every UPDATE."
+sessions,token_hash,text,No,PK,,,,No,SHA-256 of the session cookie token; the token itself is never stored.,ADR-0006: server-side sessions; a database leak must not hand out live sessions.
+sessions,user_id,bigint,No,FK,,users.id,CASCADE,No,The signed-in user.,ADR-0006: every route checks the session's role.
+sessions,csrf_token_hash,text,No,,,,,No,Hash of the CSRF token every state-changing request must send.,ADR-0006 consequences: CSRF protection on every state-changing request.
+sessions,expires_at,timestamptz,No,,,,,No,When the session stops being accepted.,"ADR-0006: sessions expire; checked inside every request, purged by a daily sweep."
+sessions,created_at,timestamptz,No,,now(),,,No,When the row was written.,Rule: audit columns (database/references/postgres.md).
+brands,id,bigint,No,PK,identity,,,No,Surrogate key; referenced by products.,REQ-001: every CSV row carries a brand.
+brands,name,text,No,UK,,,,No,"Brand name as written in the CSV, unique ignoring case.",REQ-001: the CSV brand column; an upload matches rows to an existing brand by name.
+brands,voice_note,text,Yes,,,,,No,Short note on the brand's voice; null until the seller writes one.,AC-US-00-003-4: the voice note goes in every generation prompt; AC-US-00-003-5: null means ask before generating.
+brands,created_at,timestamptz,No,,now(),,,No,When the row was written.,Rule: audit columns (database/references/postgres.md).
+brands,updated_at,timestamptz,No,,now(),,,No,"Last change to this row, set by the repository on every update.","Rule: audit columns, set by the repository on every UPDATE."
+uploads,id,bigint,No,PK,identity,,,No,Surrogate key; the upload images are attached to.,HLD section 5: /v1/uploads/{id}/images attaches images to this upload.
+uploads,uploaded_by,bigint,No,FK,,users.id,RESTRICT,No,The seller who uploaded.,ADR-0006: only signed-in users upload; the upload names who.
+uploads,file_name,text,No,,,,,No,Name of the uploaded CSV file.,AC-US-00-001-1: the upload summary names the file.
+uploads,rows_total,integer,No,,,,,No,Data rows in the file.,AC-US-00-001-1: the summary shows the count.
+uploads,rows_accepted,integer,No,,,,,No,Rows that became products.,AC-US-00-001-1: one product per valid row.
+uploads,rows_rejected,integer,No,,,,,No,"Rows refused, each listed in upload_row_errors.",AC-US-00-001-2: rejected rows are reported; the rest still load.
+uploads,created_at,timestamptz,No,,now(),,,No,When the row was written.,HLD section 11: B1 measures time from upload to export.
+uploads,updated_at,timestamptz,No,,now(),,,No,"Last change to this row, set by the repository on every update.","Rule: audit columns, set by the repository on every UPDATE."
+upload_row_errors,id,bigint,No,PK,identity,,,No,Surrogate key.,AC-US-00-001-2: each rejected row is one line in the summary.
+upload_row_errors,upload_id,bigint,No,FK,,uploads.id,CASCADE,No,The upload the row came from.,AC-US-00-001-2: errors are shown per upload.
+upload_row_errors,row_number,integer,No,,,,,No,"Line number in the CSV file, the header being line 1.",AC-US-00-001-2: the reason is shown with its row number.
+upload_row_errors,sku,text,Yes,,,,,No,SKU on the refused row; null when the row had none.,AC-US-00-001-2 and D21: a missing or already-existing SKU is a rejection reason.
+upload_row_errors,reason,text,No,,,,,No,"Why the row was refused, as shown to the seller.",AC-US-00-001-2: the row is rejected with its reason.
+upload_row_errors,created_at,timestamptz,No,,now(),,,No,When the row was written.,Rule: audit columns (database/references/postgres.md).
+products,id,bigint,No,PK,identity,,,No,"Surrogate key; referenced by images, attributes, listings, jobs and AI calls.",REQ-001: one product per CSV row.
+products,sku,text,No,UK,,,,No,"Seller's product code, unique ignoring case across Catalift.",REQ-001 and D21: a SKU already in Catalift is rejected; D20 matches image names to it.
+products,brand_id,bigint,No,FK,,brands.id,RESTRICT,No,The product's brand.,REQ-001: the CSV brand column; AC-US-00-003-4 picks the voice note by brand.
+products,upload_id,bigint,No,FK,,uploads.id,RESTRICT,No,The upload that created the product.,AC-US-00-001-3: images uploaded to an upload attach to that upload's SKUs.
+products,category,text,No,,,,,No,Category from the CSV.,REQ-001: the CSV category column.
+products,price_minor,bigint,No,,,,,No,Price in minor units of currency (paise).,REQ-001: the CSV price column; Rule: money in minor units.
+products,currency,char(3),No,,'INR',,,No,ISO 4217 code of price_minor.,"Rule: money carries its currency; the CSV has none, so INR is assumed (open concern)."
+products,created_at,timestamptz,No,,now(),,,No,When the row was written.,Rule: audit columns (database/references/postgres.md).
+products,updated_at,timestamptz,No,,now(),,,No,"Last change to this row, set by the repository on every update.","Rule: audit columns, set by the repository on every UPDATE."
+product_images,id,bigint,No,PK,identity,,,No,Surrogate key.,AC-US-00-001-3: each matched image is attached to one product.
+product_images,product_id,bigint,No,FK,,products.id,RESTRICT,No,The product the image belongs to.,AC-US-00-001-3 and D20: the image is attached to the SKU its name matches.
+product_images,position,smallint,No,,,,,No,Order among the product's images; 1 drives detection.,"Q-005: several images per SKU, the first drives detection."
+product_images,original_file_name,text,No,,,,,No,File name as uploaded.,D20: the match rule runs on this name; the summary shows it.
+product_images,original_path,text,No,,,,,No,"Where the original is stored on the data disk, under a generated name.","HLD section 9: images are stored under generated names, never the uploaded path."
+product_images,detection_path,text,No,,,,,No,Where the copy scaled to at most 1024 px on its long side is stored.,D23: detection sends only the 1024 px copy.
+product_images,content_type,text,No,,,,,No,Sniffed image type.,HLD section 9: images are type-sniffed at upload.
+product_images,byte_size,integer,No,,,,,No,Size of the original in bytes.,HLD section 9: uploads are capped at 10 MB per image.
+product_images,created_at,timestamptz,No,,now(),,,No,When the row was written.,Rule: audit columns (database/references/postgres.md).
+product_attributes,product_id,bigint,No,"PK, FK",,products.id,RESTRICT,No,The product described; one row each.,REQ-003: attributes are detected per product; D5 puts them in listings.
+product_attributes,detection_status,detection_status,No,,'pending',,,No,"pending, done, failed or stopped_budget.",AC-US-00-002-2: each product shows detection done or failed; AC-US-00-012-2: work refused by the budget shows stopped.
+product_attributes,revision,integer,No,,0,,,No,Raised by every detection result and every reviewer correction.,D5 and review fix: text generated from an older attribute revision is not applied.
+product_attributes,colour,text,Yes,,,,,No,Detected or corrected colour; 'unknown' when unclear; null until done.,REQ-003 and AC-US-00-002-3: unclear attributes are stored as 'unknown'.
+product_attributes,pattern,text,Yes,,,,,No,Detected or corrected pattern; null until done.,REQ-003.
+product_attributes,sleeve,text,Yes,,,,,No,Detected or corrected sleeve; null until done.,REQ-003.
+product_attributes,neckline,text,Yes,,,,,No,Detected or corrected neckline; null until done.,REQ-003.
+product_attributes,fit,text,Yes,,,,,No,Detected or corrected fit; null until done.,REQ-003.
+product_attributes,detection_error,text,Yes,,,,,No,Why detection failed; null unless failed.,AC-US-00-002-2: a failed product shows the reason.
+product_attributes,corrected_by,bigint,Yes,FK,,users.id,RESTRICT,No,Reviewer who last corrected an attribute; null while only detected.,AC-US-00-007-3 and D5: a reviewer can correct a detected attribute.
+product_attributes,created_at,timestamptz,No,,now(),,,No,When the row was written.,Rule: audit columns (database/references/postgres.md).
+product_attributes,updated_at,timestamptz,No,,now(),,,No,"Last change to this row, set by the repository on every update.","Rule: audit columns, set by the repository on every UPDATE."
+generation_runs,id,bigint,No,PK,identity,,,No,Surrogate key; jobs and the progress view group by it.,AC-US-00-003-6: the seller sees per-product progress for a run.
+generation_runs,started_by,bigint,No,FK,,users.id,RESTRICT,No,Who started the run.,ADR-0006: every action names the signed-in user.
+generation_runs,neutral_voice_confirmed,boolean,No,,false,,,No,True when the seller confirmed a neutral voice for brands with no voice note.,"AC-US-00-003-5: with no voice note, the seller confirms a neutral default before generation starts."
+generation_runs,created_at,timestamptz,No,,now(),,,No,When the row was written.,Rule: audit columns (database/references/postgres.md).
+generation_runs,updated_at,timestamptz,No,,now(),,,No,"Last change to this row, set by the repository on every update.","Rule: audit columns, set by the repository on every UPDATE."
+listings,id,bigint,No,PK,identity,,,No,Surrogate key; the grid row and the URL of a listing.,AC-US-00-007-1: each grid row is one product and channel.
+listings,product_id,bigint,No,FK,,products.id,RESTRICT,No,The product described.,REQ-004: a listing per product per enabled channel.
+listings,channel,text,No,,,,,No,"Channel id from configuration, such as amazon_style.","REQ-017: channels are configuration, so a new channel needs no migration (text, not an enum)."
+listings,status,listing_status,No,,'queued',,,No,"queued, generated, failed or stopped_budget.","D6: re-runs pick up each product and channel that is missing, failed or stopped by the budget."
+listings,failure_reason,text,Yes,,,,,No,Why generation failed; null unless failed.,HLD section 7: the product shows 'failed' with its reason.
+listings,version,integer,No,,0,,,No,0 before generation; raised by every change to the text or the product's attributes.,"Tenet 5, D5, D7, D12: any change clears approval; approvals match on version."
+listings,title,text,Yes,,,,,No,Generated or edited title; null until generated.,REQ-004.
+listings,bullet_1,text,Yes,,,,,No,Bullet point 1; null until generated.,REQ-005: exactly 5 bullets (AC-US-00-003-2).
+listings,bullet_2,text,Yes,,,,,No,Bullet point 2; null until generated.,REQ-005.
+listings,bullet_3,text,Yes,,,,,No,Bullet point 3; null until generated.,REQ-005.
+listings,bullet_4,text,Yes,,,,,No,Bullet point 4; null until generated.,REQ-005.
+listings,bullet_5,text,Yes,,,,,No,Bullet point 5; null until generated.,REQ-005.
+listings,description,text,Yes,,,,,No,Generated or edited description; null until generated.,REQ-006.
+listings,rule_status,rule_status,No,,'unchecked',,,No,"unchecked, passing or failing for the current version.",AC-US-00-004-1: every listing shows passing or failing; AC-US-00-009-3: approval needs passing.
+listings,rule_config_hash,text,Yes,,,,,No,Hash of the channel config the current status was checked against.,"D7: at start-up, listings whose hash differs are re-checked."
+listings,first_pass_passed,boolean,Yes,,,,,No,Whether the first generated version passed the rules; set once.,D19: B2 is the share passing at first generation.
+listings,first_pass_failed_rules,text[],Yes,,,,,No,Rule names the first version failed; set once with first_pass_passed.,D19: the failing rule names are kept with the first-pass result.
+listings,created_at,timestamptz,No,,now(),,,No,When the row was written.,Rule: audit columns (database/references/postgres.md).
+listings,updated_at,timestamptz,No,,now(),,,No,"Last change to this row, set by the repository on every update.","Rule: audit columns, set by the repository on every UPDATE."
+rule_results,id,bigint,No,PK,identity,,,No,Surrogate key.,REQ-009: each failure is shown on its own.
+rule_results,listing_id,bigint,No,FK,,listings.id,CASCADE,No,The listing that failed.,AC-US-00-004-5: a failure shows against its channel's listing only.
+rule_results,listing_version,integer,No,,,,,No,Version the rule was checked against.,AC-US-00-004-6: a changed listing is checked again; older results are purged.
+rule_results,rule,text,No,,,,,No,"Rule name, such as title_max_length.",AC-US-00-004-2 to -4: the failure names the rule.
+rule_results,field,text,No,,,,,No,"Field the failure is in, such as title or bullet_3.",AC-US-00-004-3: a banned word names its field.
+rule_results,message,text,No,,,,,No,"Detail shown to the reviewer: limit and length, the word, or the missing attribute.",AC-US-00-004-2 to -4: the failure states what is wrong.
+rule_results,config_hash,text,No,,,,,No,Hash of the channel config used.,D7: results are tied to the rules they were checked against.
+rule_results,created_at,timestamptz,No,,now(),,,No,When the row was written.,Rule: audit columns (database/references/postgres.md).
+approvals,id,bigint,No,PK,identity,,,No,Surrogate key.,REQ-012: each approval is recorded.
+approvals,listing_id,bigint,No,FK,,listings.id,RESTRICT,No,The listing approved.,REQ-015: only approved listings are exported.
+approvals,listing_version,integer,No,,,,,No,Version approved; the listing counts as approved only while its version still equals this.,"Tenet 5 and Q-022: any change clears approval, so approval is matched on version, not stored on the listing."
+approvals,approved_by,bigint,No,FK,,users.id,RESTRICT,No,The reviewer who approved.,ADR-0006: approvals record the reviewer who made them.
+approvals,created_at,timestamptz,No,,now(),,,No,When the row was written.,AC-US-00-009-4: an approved listing shows when it was approved.
+regeneration_requests,id,bigint,No,PK,identity,,,No,Surrogate key; the request id in the regenerate job key.,"D12: regenerate jobs are keyed by listing, field and request id."
+regeneration_requests,listing_id,bigint,No,FK,,listings.id,RESTRICT,No,The listing to change.,REQ-013: regenerate a field of a listing.
+regeneration_requests,field,text,No,,,,,No,"title, bullet_1 to bullet_5, or description.",AC-US-00-008-1 and -2: only that field changes.
+regeneration_requests,instruction,text,No,,,,,No,Reviewer's free-text instruction.,REQ-013 and AC-US-00-008-3: the instruction goes in the prompt.
+regeneration_requests,base_value,text,No,,,,,No,The field's value when the request was made.,D12: the result applies only if the field still holds this value.
+regeneration_requests,status,regeneration_status,No,,'queued',,,No,"queued, applied, superseded, failed or stopped_budget.",D12: a dropped result shows 'superseded by your edit'; D13: refused requests end stopped_budget.
+regeneration_requests,requested_by,bigint,No,FK,,users.id,RESTRICT,No,The reviewer who asked.,ADR-0006: only reviewers regenerate.
+regeneration_requests,created_at,timestamptz,No,,now(),,,No,When the row was written.,Rule: audit columns (database/references/postgres.md).
+regeneration_requests,updated_at,timestamptz,No,,now(),,,No,"Last change to this row, set by the repository on every update.","Rule: audit columns, set by the repository on every UPDATE."
+jobs,id,bigint,No,PK,identity,,,No,Surrogate key; logs carry it.,HLD section 10: every job log line carries the job id.
+jobs,type,job_type,No,,,,,No,"detect_attributes, generate_listing or regenerate_field.",HLD section 5: the three job types.
+jobs,dedupe_key,text,No,,,,,No,"Product, step and channel, or listing, field and request id for regenerations.",ADR-0005 check 6 and D12: a job delivered twice does nothing twice.
+jobs,status,job_status,No,,'queued',,,No,"queued, running, done, failed, stopped_budget or cancelled.",ADR-0005: retries and terminal failed; D13 stopped_budget; HLD section 7: a restarted run cancels its queued jobs.
+jobs,run_id,bigint,Yes,FK,,generation_runs.id,RESTRICT,No,The run the job belongs to; null for regenerations.,D13: regenerate jobs belong to no run.
+jobs,product_id,bigint,No,FK,,products.id,RESTRICT,No,The product the work is for.,AC-US-00-002-2 and AC-US-00-003-6: progress and failures per product.
+jobs,listing_id,bigint,Yes,FK,,listings.id,RESTRICT,No,The listing written; null for detection.,D6: generation work is per product and channel.
+jobs,regeneration_request_id,bigint,Yes,FK,,regeneration_requests.id,RESTRICT,No,The request served; null unless a regeneration.,D12: the job carries its request.
+jobs,attempts,smallint,No,,0,,,No,"Attempts used, 0 to 3; a 429 does not use one.",D14: 3 attempts; D15: rate limits do not use an attempt.
+jobs,run_after,timestamptz,No,,now(),,,No,Earliest time the job may be claimed.,ADR-0005: retries wait in the table with a run-after time.
+jobs,first_attempt_at,timestamptz,Yes,,,,,No,When the first attempt started; null until claimed.,D15: a job still rate limited 1 hour after its first try fails.
+jobs,attributes_revision,integer,Yes,,,,,No,Attribute revision read when the prompt was built; null for detection.,"Review fix for D5: the result applies only if product_attributes.revision is unchanged, otherwise the work is queued again."
+jobs,claim_token,uuid,Yes,,,,,No,Random token set on every claim; null unless running.,Review fix: a late finisher whose lease was swept cannot finish a job someone else now holds.
+jobs,claimed_by,text,Yes,,,,,No,Worker process holding the claim; null unless running.,ADR-0005: claims with row locking; the sweep returns stale claims.
+jobs,lease_until,timestamptz,Yes,,,,,No,When the claim expires; null unless running.,"HLD section 8: a 2 minute lease, longer than the 60 second call timeout."
+jobs,last_error,text,Yes,,,,,No,Most recent error; null when none.,AC-US-00-002-2: a failure shows its reason.
+jobs,created_at,timestamptz,No,,now(),,,No,When the row was written.,Rule: audit columns (database/references/postgres.md).
+jobs,updated_at,timestamptz,No,,now(),,,No,"Last change to this row, set by the repository on every update.","Rule: audit columns, set by the repository on every UPDATE."
+jobs,finished_at,timestamptz,Yes,,,,,No,"When the job reached done, failed, stopped_budget or cancelled.",HLD section 4: finished jobs are purged after a retention period (UNDEFINED).
+ai_calls,id,bigint,No,PK,identity,,,No,Surrogate key.,REQ-020: every AI call is recorded.
+ai_calls,job_id,bigint,Yes,FK,,jobs.id,SET NULL,No,The job that made the call; null for evals or after the job is purged.,AC-US-00-011-1: the record names its purpose; the ledger outlives finished jobs.
+ai_calls,product_id,bigint,Yes,FK,,products.id,RESTRICT,No,The product the call was for; null only for eval calls.,AC-US-00-011-3: a product's cost is the sum of its calls.
+ai_calls,purpose,ai_call_purpose,No,,,,,No,"detect, generate, regenerate or eval_detect.",AC-US-00-011-1: the record holds the purpose; D22: eval calls count toward the block.
+ai_calls,model,text,No,,,,,No,"Model id, such as claude-haiku-4-5.",AC-US-00-011-1 and PRD Constraints.
+ai_calls,prompt_template_id,text,No,,,,,No,Id of the prompt template rendered.,Required by AC-US-00-003-4: the prompt is traceable.
+ai_calls,prompt,text,No,,,,,No,The rendered prompt sent.,AC-US-00-003-4 and AC-US-00-008-3: the voice note and the instruction are visible in the recorded prompt.
+ai_calls,status,ai_call_status,No,,'reserved',,,No,"reserved, succeeded, failed or possibly_charged.",HLD section 7: a reservation is written before the call and finalised after; a crash leaves possibly_charged.
+ai_calls,reserved_micro_usd,bigint,No,,,,,No,"Estimated cost reserved before the call, in millionths of a US dollar.",HLD section 3: the budget check reserves an estimate under the budget lock.
+ai_calls,cost_micro_usd,bigint,Yes,,,,,No,"Actual cost reported, in millionths of a US dollar; null until known.","REQ-020: cost of every call; AC-US-00-011-2: a failed call is recorded with its cost, if any."
+ai_calls,input_tokens,integer,Yes,,,,,No,Input tokens reported; null until known.,REQ-020: token count of every call.
+ai_calls,output_tokens,integer,Yes,,,,,No,Output tokens reported; null until known.,REQ-020.
+ai_calls,provider_generation_id,text,Yes,,,,,No,OpenRouter's generation id; null when not returned.,TODOS.md reconciliation (D26) looks up real cost by this id.
+ai_calls,error,text,Yes,,,,,No,Error returned; null on success.,AC-US-00-011-2: failed calls are still recorded.
+ai_calls,created_at,timestamptz,No,,now(),,,No,When the row was written.,Rule: audit columns (database/references/postgres.md).
+ai_calls,updated_at,timestamptz,No,,now(),,,No,"Last change to this row, set by the repository on every update.","Rule: audit columns, set by the repository on every UPDATE."
+budget,id,smallint,No,PK,1,,,No,Always 1; the row the gateway locks.,HLD section 7: the budget check and reservation happen under one lock (SELECT ... FOR UPDATE on this row).
+budget,limit_micro_usd,bigint,No,,8000000,,,No,"Spend after which calls are refused, in millionths of a US dollar.",REQ-021: calls are blocked once spending passes USD 8.
+budget,blocked_at,timestamptz,Yes,,,,,No,When the gateway first refused a call; null while not blocked.,D13: a stored budget-blocked state drives the banner until the owner clears it.
+budget,created_at,timestamptz,No,,now(),,,No,When the row was written.,Rule: audit columns (database/references/postgres.md).
+budget,updated_at,timestamptz,No,,now(),,,No,"Last change to this row, set by the repository on every update.","Rule: audit columns, set by the repository on every UPDATE."
+exports,id,bigint,No,PK,identity,,,No,Surrogate key; the download URL names it.,HLD section 5: /v1/exports/{id}/files/{channel}.
+exports,created_by,bigint,No,FK,,users.id,RESTRICT,No,The reviewer who exported.,ADR-0006: only reviewers export.
+exports,created_at,timestamptz,No,,now(),,,No,When the row was written.,HLD section 11: B1 measures time from upload to export.
+export_files,id,bigint,No,PK,identity,,,No,Surrogate key.,REQ-014: one CSV file per channel.
+export_files,export_id,bigint,No,FK,,exports.id,CASCADE,No,The export the file belongs to.,AC-US-00-010-1: one export produces one file per channel.
+export_files,channel,text,No,,,,,No,Channel id from configuration.,REQ-014: one file per channel.
+export_files,file_path,text,No,,,,,No,Where the CSV is stored on the data disk.,HLD section 5: the file is downloaded later.
+export_files,row_count,integer,No,,,,,No,Approved listings in the file.,AC-US-00-010-5: a channel with no approved rows gets no file.
+export_files,created_at,timestamptz,No,,now(),,,No,When the row was written.,Rule: audit columns (database/references/postgres.md).
+config_rechecks,id,bigint,No,PK,identity,,,No,Surrogate key.,D7: each re-check is recorded.
+config_rechecks,channel,text,No,,,,,No,Channel whose configuration changed.,D7: re-check runs per channel whose config hash differs.
+config_rechecks,config_hash,text,No,,,,,No,Hash of the configuration now loaded.,D7: listings are re-checked against this hash.
+config_rechecks,listings_rechecked,integer,No,,,,,No,Listings validated again.,D7: the count is logged and shown on the grid.
+config_rechecks,approvals_cleared,integer,No,,,,,No,Approved listings that now fail and lost their approval.,"D7: approvals that now fail are cleared, with the count shown on the grid."
+config_rechecks,created_at,timestamptz,No,,now(),,,No,When the row was written.,Rule: audit columns (database/references/postgres.md).

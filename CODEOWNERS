@@ -1,0 +1,21 @@
+# Code ownership and the approval rule.
+#
+# GitHub reads this file for "Require review from Code Owners" on main.
+# One owner today (ADR-0011); add a second handle when a second engineer joins.
+
+*                       @KarthikReddy8809
+
+# The standard itself: any change to how agents and CI behave needs the lead.
+/AGENTS.md              @KarthikReddy8809
+/CLAUDE.md              @KarthikReddy8809
+/.claude/               @KarthikReddy8809
+/.githooks/             @KarthikReddy8809
+/.github/               @KarthikReddy8809
+/CODEOWNERS             @KarthikReddy8809
+/SECURITY.md            @KarthikReddy8809
+
+# Boundaries get a second look.
+/**/migrations/         @KarthikReddy8809
+/docs/adr/              @KarthikReddy8809
+/api/openapi.yaml       @KarthikReddy8809
+/infra/                 @KarthikReddy8809

@@ -1,0 +1,1389 @@
+openapi: 3.1.0
+info:
+  title: Catalift API
+  version: 1.0.0
+  description: |
+    The REST API the Catalift web app uses: sellers upload products and start generation, reviewers edit,
+    regenerate, approve and export listings, and both see AI cost and the budget state (ADR-0007).
+    Serves: US-00-001 to US-00-012. Style: docs/api/README.md. The server default for X-API-Version is the
+    newest date version, currently 2026-10-04.
+  contact:
+    name: Catalift team
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+  x-api-style: >-
+    REST over HTTPS with JSON bodies, plus multipart for CSV and image uploads and text/csv for export
+    downloads; one Go service exposing five areas (auth, catalogue, listings, export, cost) under one /v1.
+  x-versioning: >-
+    Major in the path (/v1, ADR-0007); dated behaviour changes inside a major in X-API-Version, server
+    default the newest (2026-10-04).
+  x-authentication: >-
+    A server-side session in an HTTP-only secure cookie (catalift_session) set by POST /v1/sessions, with
+    an X-CSRF-Token header on every state-changing request (ADR-0006). Roles seller and reviewer are
+    checked on every route; a seller calling a reviewer action gets 403 forbidden_role.
+  x-conventions:
+    - rule: 'The base path is /v1, not /api/v1.'
+      why: 'ADR-0007 and HLD section 5 fixed /v1; the reverse proxy forwards /v1 and serves the web app at /.'
+    - rule: 'Authentication is a session cookie plus X-CSRF-Token, not a bearer JWT.'
+      why: 'ADR-0006 chose server-side sessions for a handful of seeded users, revocable at once; the CSRF header closes the cookie''s cross-site risk.'
+    - rule: 'A seller calling a reviewer-only operation gets 403 forbidden_role, not 404.'
+      why: 'AC-US-00-009-5 and ADR-0006 require a visible refusal; one organisation per deployment means every record is visible to every signed-in user, so 403 leaks nothing.'
+    - rule: 'Ids are decimal strings of the database''s bigint ids.'
+      why: 'The data model uses bigint identity ids (data-model deviation 1); strings keep the style''s id type and avoid JavaScript number precision limits.'
+    - rule: 'AI cost is an integer cost_micro_usd (millionths of a US dollar), not an amount_minor with currency.'
+      why: 'OpenRouter bills only in USD and single calls cost fractions of a cent (data-model deviation 3).'
+    - rule: 'CSV and images are uploaded as multipart through the API, not by signed URL; caps are 5 MB per CSV and 10 MB per image.'
+      why: 'PRD Constraints and ADR-0002 keep files on the VM''s local disk; there is no object store to sign URLs for.'
+    - rule: 'Edits carry the listing or attribute version they were made against; a stale version is 409 version_conflict.'
+      why: 'Tenet 5 and D5, D12: approval covers one exact version, so an edit made from an old screen must not land silently.'
+    - rule: 'Rate limits are 300 requests a minute per session and 1,200 a minute per IP; sign-in is limited to 10 attempts per 15 minutes per IP (assumption, owner to confirm).'
+      why: 'The style requires stated numbers; HLD section 9 asks for a sign-in rate limit; two users never come near the general limits.'
+servers:
+  - url: /v1
+    description: Same origin as the web app; the reverse proxy forwards /v1 to the API (HLD section 3)
+security:
+  - sessionCookie: []
+tags:
+  - name: sessions
+    description: Sign in, see who is signed in, sign out (ADR-0006).
+  - name: brands
+    description: Brands from the CSV and their voice notes (US-00-003).
+  - name: uploads
+    description: CSV and image uploads with their summaries (US-00-001).
+  - name: products
+    description: Products, their detected attributes and their AI cost (US-00-001, US-00-002, US-00-007, US-00-011).
+  - name: generation
+    description: Starting, following and resuming generation (US-00-002, US-00-003, US-00-012).
+  - name: listings
+    description: The review grid, edits, regenerations and approvals (US-00-004, US-00-007, US-00-008, US-00-009).
+  - name: channels
+    description: Configured channels, their rules and re-check counts (US-00-005, US-00-006).
+  - name: exports
+    description: One CSV per channel of approved listings (US-00-010).
+  - name: budget
+    description: AI spend against the USD 8 limit and the blocked state (US-00-011, US-00-012).
+  - name: health
+    description: Liveness for the uptime check (HLD section 10).
+
+paths:
+  /sessions:
+    post:
+      operationId: createSession
+      summary: Sign in
+      description: >-
+        Checks email and password and sets the catalift_session cookie. Public by necessity (no session
+        exists yet). Not idempotency-keyed: a repeated sign-in replaces the cookie and creates no record a
+        user can see. Returns 200 with the CSRF token to send on later writes.
+      tags: [sessions]
+      security: []
+      x-story-ids: [ADR-0006, US-00-009, US-00-010]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SessionCreate' }
+            example: { email: reviewer@catalift.example, password: correct-horse-battery }
+      responses:
+        '200':
+          description: Signed in; Set-Cookie carries the session
+          headers:
+            Set-Cookie: { schema: { type: string }, description: 'catalift_session; HttpOnly; Secure; SameSite=Lax' }
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /sessions/current:
+    get:
+      operationId: getCurrentSession
+      summary: Who is signed in
+      tags: [sessions]
+      x-story-ids: [ADR-0006, US-00-009]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: The signed-in user and the CSRF token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: deleteCurrentSession
+      summary: Sign out
+      tags: [sessions]
+      x-story-ids: [ADR-0006]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204':
+          description: Signed out; the cookie is cleared
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /brands:
+    get:
+      operationId: listBrands
+      summary: List brands with their voice notes
+      tags: [brands]
+      x-story-ids: [US-00-003]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: One page of brands, by name
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BrandPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /brands/{brand_id}:
+    parameters:
+      - $ref: '#/components/parameters/BrandId'
+    patch:
+      operationId: updateBrand
+      summary: Set a brand's voice note
+      description: Replaces the voice note; sending the same note twice leaves the same state.
+      tags: [brands]
+      x-story-ids: [US-00-003]
+      x-idempotent: true
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BrandUpdate' }
+            example: { voice_note: Warm and plain-spoken; no slang; mention fabric first. }
+      responses:
+        '200':
+          description: The updated brand
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Brand' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /uploads:
+    post:
+      operationId: createUpload
+      summary: Upload a product CSV
+      description: >-
+        Multipart CSV with columns sku, category, brand, price. Creates one product per valid row and reports
+        rejected rows with their reasons, including a SKU repeated in the file or already in Catalift (D21).
+        Brands named for the first time are created.
+      tags: [uploads]
+      x-story-ids: [US-00-001]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: '#/components/schemas/UploadCreate' }
+      responses:
+        '201':
+          description: Upload summary
+          headers:
+            Location: { schema: { type: string, format: uri } }
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Upload' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /uploads/{upload_id}:
+    parameters:
+      - $ref: '#/components/parameters/UploadId'
+    get:
+      operationId: getUpload
+      summary: Get an upload's summary
+      tags: [uploads]
+      x-story-ids: [US-00-001, US-00-011]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: The upload summary with its rejected rows and AI cost total
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Upload' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /uploads/{upload_id}/images:
+    parameters:
+      - $ref: '#/components/parameters/UploadId'
+    post:
+      operationId: createUploadImages
+      summary: Upload images for an upload's products
+      description: >-
+        Multipart image files. Each attaches to the SKU its name starts with, followed by _, -, . or the end of
+        the name; the longest matching SKU wins (D20). Unmatched files and products still without an image are
+        listed in the response.
+      tags: [uploads]
+      x-story-ids: [US-00-001]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: '#/components/schemas/ImagesCreate' }
+      responses:
+        '201':
+          description: Images attached
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImagesResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /products:
+    get:
+      operationId: listProducts
+      summary: List products with detection status and AI cost
+      tags: [products]
+      x-story-ids: [US-00-001, US-00-002, US-00-011]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: filter[upload_id]
+          in: query
+          description: Only products from this upload (served by idx_products_upload_id).
+          schema: { type: string, pattern: '^[0-9]+$' }
+        - name: filter[detection_status]
+          in: query
+          description: Only products in this detection state (sequential scan by design, under 10^4 rows).
+          schema: { $ref: '#/components/schemas/DetectionStatus' }
+      responses:
+        '200':
+          description: One page of products, by SKU
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /products/{product_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      operationId: getProduct
+      summary: Get one product
+      tags: [products]
+      x-story-ids: [US-00-001, US-00-002, US-00-011]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: The product with its attributes, images and AI cost
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /products/{product_id}/attributes:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    patch:
+      operationId: updateProductAttributes
+      summary: Correct detected attributes (reviewer)
+      description: >-
+        Sets the given attributes, raises the attribute revision and, in the same transaction, raises the version
+        of every listing of the product, clears their approvals and re-checks their rules (D5). The body carries
+        the revision it was made against; a stale revision is 409 version_conflict, so a retry cannot apply twice.
+      tags: [products]
+      x-story-ids: [US-00-007]
+      x-idempotent: true
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AttributesUpdate' }
+            example: { revision: 1, colour: black }
+      responses:
+        '200':
+          description: The corrected attributes
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductAttributes' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /generation-runs:
+    post:
+      operationId: createGenerationRun
+      summary: Start generation
+      description: >-
+        Queues work for every (product, enabled channel) with no listing, a failed one or a stopped_budget one,
+        and detection for products whose detection is pending, failed or stopped (D6). Refused with 422
+        voice_note_required when a brand in scope has no voice note and neutral_voice_confirmed is false
+        (AC-US-00-003-5), and with 422 budget_blocked while the budget is blocked (D13).
+      tags: [generation]
+      x-story-ids: [US-00-002, US-00-003]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GenerationRunCreate' }
+            example: { neutral_voice_confirmed: false }
+      responses:
+        '201':
+          description: The run, with what was queued
+          headers:
+            Location: { schema: { type: string, format: uri } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenerationRun' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /generation-runs/{run_id}:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      operationId: getGenerationRun
+      summary: Follow a run's progress
+      description: The web app polls this; the seller can close the page and come back (AC-US-00-003-6).
+      tags: [generation]
+      x-story-ids: [US-00-003, US-00-012]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: Progress counts for the run
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenerationRun' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /generation-runs/{run_id}/resume:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    post:
+      operationId: resumeGenerationRun
+      summary: Resume failed and stopped work in a run
+      description: >-
+        Queues again the run's failed and stopped_budget detection and generation (D6). Live work is not queued
+        twice: a repeat while work is still queued queues nothing new, so the call is safe to retry.
+      tags: [generation]
+      x-story-ids: [US-00-003, US-00-012]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: What was queued again
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenerationRun' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /listings:
+    get:
+      operationId: listListings
+      summary: The review grid
+      description: One row per product and channel (AC-US-00-007-1), by product SKU then channel.
+      tags: [listings]
+      x-story-ids: [US-00-004, US-00-007, US-00-009]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: filter[channel]
+          in: query
+          description: Only this channel (AC-US-00-007-5; sequential scan by design, under 10^4 rows).
+          schema: { type: string, pattern: '^[a-z][a-z0-9_]{1,39}$' }
+        - name: filter[rule_status]
+          in: query
+          description: Only this rule status (AC-US-00-007-5; sequential scan by design).
+          schema: { $ref: '#/components/schemas/RuleStatus' }
+        - name: filter[approved]
+          in: query
+          description: Only approved (true) or unapproved (false) listings.
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: One page of grid rows
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ListingPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /listings/{listing_id}:
+    parameters:
+      - $ref: '#/components/parameters/ListingId'
+    get:
+      operationId: getListing
+      summary: Get one listing with its rule failures
+      tags: [listings]
+      x-story-ids: [US-00-004, US-00-007]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: The listing
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Listing' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    patch:
+      operationId: updateListing
+      summary: Edit listing text (reviewer)
+      description: >-
+        Saves the given fields, raises the version, clears any approval and re-checks the rules in one transaction
+        (AC-US-00-007-2 and -4, AC-US-00-004-6). The body carries the version it was made against; a stale
+        version is 409 version_conflict, so a retry cannot apply twice.
+      tags: [listings]
+      x-story-ids: [US-00-007, US-00-004]
+      x-idempotent: true
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ListingUpdate' }
+            example: { version: 2, title: 'Women''s Black Cotton Kurta, Regular Fit' }
+      responses:
+        '200':
+          description: The listing after the edit and re-check
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Listing' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /listings/{listing_id}/regeneration-requests:
+    parameters:
+      - $ref: '#/components/parameters/ListingId'
+    get:
+      operationId: listRegenerationRequests
+      summary: A listing's regeneration requests
+      tags: [listings]
+      x-story-ids: [US-00-008]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: One page of requests, newest first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegenerationRequestPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: createRegenerationRequest
+      summary: Regenerate one field with an instruction (reviewer)
+      description: >-
+        Queues a regeneration of one field. The result applies only if the field still holds its value at request
+        time; otherwise the request ends superseded (D12). Allowed only on a generated listing (422
+        listing_not_generated) and not while the budget is blocked (422 budget_blocked).
+      tags: [listings]
+      x-story-ids: [US-00-008]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegenerationRequestCreate' }
+            example: { field: title, instruction: 'Shorter, and mention cotton.' }
+      responses:
+        '201':
+          description: The queued request
+          headers:
+            Location: { schema: { type: string, format: uri } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegenerationRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /approvals:
+    post:
+      operationId: createApprovals
+      summary: Approve many listings (reviewer)
+      description: >-
+        Approves each listed (listing_id, version) whose listing is still at that version and passing its rules, in
+        one statement per listing; the rest are skipped with a reason (AC-US-00-009-1 to -3, Q-009).
+      tags: [listings]
+      x-story-ids: [US-00-009]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApprovalBatchCreate' }
+            example:
+              items:
+                - { listing_id: '412', version: 3 }
+                - { listing_id: '413', version: 1 }
+      responses:
+        '201':
+          description: Approved and skipped listings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApprovalBatchResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /channels:
+    get:
+      operationId: listChannels
+      summary: Configured channels, their rules and the last re-check
+      description: >-
+        Channels come from configuration files (REQ-017). A channel whose file failed to load is listed disabled with
+        the error (D8); the last config re-check per channel carries the counts the grid shows (D7).
+      tags: [channels]
+      x-story-ids: [US-00-005, US-00-006, US-00-004]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: One page of channels
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChannelPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /exports:
+    post:
+      operationId: createExport
+      summary: Export approved listings (reviewer)
+      description: >-
+        Writes one CSV per channel holding only listings approved at their current version, with headers from the
+        channel's configuration and cells starting with =, +, - or @ escaped. A channel with no approved listings
+        gets no file and is listed in skipped_channels (AC-US-00-010-5).
+      tags: [exports]
+      x-story-ids: [US-00-010]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '201':
+          description: The export and its files
+          headers:
+            Location: { schema: { type: string, format: uri } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Export' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /exports/{export_id}:
+    parameters:
+      - $ref: '#/components/parameters/ExportId'
+    get:
+      operationId: getExport
+      summary: Get an export and its files
+      tags: [exports]
+      x-story-ids: [US-00-010]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: The export
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Export' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /exports/{export_id}/files/{channel}:
+    parameters:
+      - $ref: '#/components/parameters/ExportId'
+      - name: channel
+        in: path
+        required: true
+        schema: { type: string, pattern: '^[a-z][a-z0-9_]{1,39}$' }
+    get:
+      operationId: getExportFile
+      summary: Download one channel's CSV (reviewer)
+      tags: [exports]
+      x-story-ids: [US-00-010]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: The CSV file
+          headers:
+            Content-Disposition: { schema: { type: string }, description: 'attachment; filename="<channel>-<export_id>.csv"' }
+          content:
+            text/csv:
+              schema: { type: string }
+              example: "sku,title,bullet_1,bullet_2,bullet_3,bullet_4,bullet_5,description,colour,pattern,sleeve,neckline,fit\nKU-104,Women's Black Cotton Kurta,...\n"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /budget:
+    get:
+      operationId: getBudget
+      summary: AI spend, the limit and whether calls are blocked
+      description: >-
+        spent_micro_usd uses the one spend expression of the data model (succeeded at cost, failed at cost or 0,
+        reserved and possibly_charged at their reservation). blocked_at drives the banner (D13).
+      tags: [budget]
+      x-story-ids: [US-00-011, US-00-012]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: The budget state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Budget' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: Liveness
+      description: Public so the Cloud Monitoring uptime check can call it without a session (HLD section 10).
+      tags: [health]
+      security: []
+      x-story-ids: [ADR-0010]
+      responses:
+        '200':
+          description: The API and its database answer
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: catalift_session
+      description: Server-side session set by POST /v1/sessions (ADR-0006).
+  parameters:
+    ApiVersion:
+      name: X-API-Version
+      in: header
+      required: false
+      description: Date version, e.g. 2026-10-04. Missing means the server default (the newest).
+      schema: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client UUID. Same key and body replays the first result for 24 hours; same key and a different body is 409 idempotency_conflict.
+      schema: { type: string, format: uuid }
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: The csrf_token from the session; required on every state-changing request (ADR-0006).
+      schema: { type: string }
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque cursor from page.next_cursor.
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    BrandId:
+      name: brand_id
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[0-9]+$' }
+    UploadId:
+      name: upload_id
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[0-9]+$' }
+    ProductId:
+      name: product_id
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[0-9]+$' }
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[0-9]+$' }
+    ListingId:
+      name: listing_id
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[0-9]+$' }
+    ExportId:
+      name: export_id
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[0-9]+$' }
+  headers:
+    XRequestId:
+      schema: { type: string }
+      description: Echoed or generated request id; quote it in support tickets.
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      x-error-codes:
+        - { code: validation_failed, status: 400, meaning: "Malformed request, an unknown filter, or a field failed validation; details names the field." }
+        - { code: unauthorized, status: 401, meaning: "No session, an expired one, or wrong email or password at sign-in." }
+        - { code: forbidden_role, status: 403, meaning: "Signed in, but this action needs the reviewer role (AC-US-00-009-5)." }
+        - { code: csrf_failed, status: 403, meaning: "X-CSRF-Token missing or not this session's token." }
+        - { code: not_found, status: 404, meaning: "No such record." }
+        - { code: idempotency_conflict, status: 409, meaning: "Idempotency-Key reused with a different body." }
+        - { code: version_conflict, status: 409, meaning: "The listing or attributes changed since the version sent; reload and retry." }
+        - { code: payload_too_large, status: 413, meaning: "CSV over 5 MB or an image over 10 MB." }
+        - { code: unsupported_media_type, status: 415, meaning: "Not CSV, or an image that is not JPEG, PNG or WebP." }
+        - { code: unprocessable, status: 422, meaning: "Valid shape but the content breaks a rule; details names it." }
+        - { code: voice_note_required, status: 422, meaning: "A brand in scope has no voice note and neutral_voice_confirmed is false (AC-US-00-003-5)." }
+        - { code: budget_blocked, status: 422, meaning: "AI calls are blocked until the owner clears the budget block (D13)." }
+        - { code: listing_not_generated, status: 422, meaning: "The listing has no generated text yet, so a field cannot be regenerated." }
+        - { code: no_approved_listings, status: 422, meaning: "No channel has an approved listing, so no file would be written (AC-US-00-010-5)." }
+        - { code: rate_limited, status: 429, meaning: "Too many requests; wait Retry-After seconds." }
+        - { code: internal, status: 500, meaning: "Unexpected failure; quote request_id to support." }
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field: { type: string }
+                  reason: { type: string }
+            request_id: { type: string }
+      example:
+        error:
+          code: voice_note_required
+          message: Brand Indigo Loom has no voice note; add one or confirm a neutral voice.
+          details: [{ field: neutral_voice_confirmed, reason: must be true when a brand has no voice note }]
+          request_id: req_01J9Z6
+    Page:
+      type: object
+      required: [has_more]
+      properties:
+        next_cursor: { type: [string, 'null'] }
+        has_more: { type: boolean }
+      example: { next_cursor: eyJza3UiOiJLVS0xMDQifQ, has_more: true }
+    Role:
+      type: string
+      enum: [seller, reviewer]
+      example: reviewer
+    DetectionStatus:
+      type: string
+      enum: [pending, done, failed, stopped_budget]
+      example: done
+    ListingStatus:
+      type: string
+      enum: [queued, generated, failed, stopped_budget]
+      example: generated
+    RuleStatus:
+      type: string
+      enum: [unchecked, passing, failing]
+      example: passing
+    RegenerationStatus:
+      type: string
+      enum: [queued, applied, superseded, failed, stopped_budget]
+      example: superseded
+    SessionCreate:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        password: { type: string, minLength: 1, maxLength: 200 }
+      example: { email: reviewer@catalift.example, password: correct-horse-battery }
+    Session:
+      type: object
+      required: [user, csrf_token, expires_at]
+      properties:
+        user:
+          type: object
+          required: [id, email, role]
+          properties:
+            id: { type: string }
+            email: { type: string }
+            role: { $ref: '#/components/schemas/Role' }
+        csrf_token: { type: string }
+        expires_at: { type: string, format: date-time }
+      example:
+        user: { id: '2', email: reviewer@catalift.example, role: reviewer }
+        csrf_token: 3f9c2a7e1b
+        expires_at: 2026-10-11T09:00:00Z
+    Brand:
+      type: object
+      required: [id, name, voice_note, created_at, updated_at]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        voice_note: { type: [string, 'null'], maxLength: 2000 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      example:
+        id: '3'
+        name: Indigo Loom
+        voice_note: Warm and plain-spoken; no slang; mention fabric first.
+        created_at: 2026-10-04T08:00:00Z
+        updated_at: 2026-10-04T08:20:00Z
+    BrandPage:
+      type: object
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Brand' } }
+        page: { $ref: '#/components/schemas/Page' }
+      example:
+        data:
+          - { id: '3', name: Indigo Loom, voice_note: null, created_at: 2026-10-04T08:00:00Z, updated_at: 2026-10-04T08:00:00Z }
+        page: { next_cursor: null, has_more: false }
+    BrandUpdate:
+      type: object
+      required: [voice_note]
+      properties:
+        voice_note: { type: [string, 'null'], minLength: 1, maxLength: 2000 }
+      example: { voice_note: Warm and plain-spoken; no slang; mention fabric first. }
+    UploadCreate:
+      type: object
+      required: [file]
+      properties:
+        file: { type: string, format: binary, description: 'CSV with header sku,category,brand,price; at most 5 MB.' }
+      example: { file: products-autumn.csv }
+    UploadRowError:
+      type: object
+      required: [row_number, sku, reason]
+      properties:
+        row_number: { type: integer, minimum: 2 }
+        sku: { type: [string, 'null'] }
+        reason: { type: string }
+      example: { row_number: 17, sku: KU-104, reason: SKU already exists }
+    Upload:
+      type: object
+      required: [id, file_name, rows_total, rows_accepted, rows_rejected, row_errors, ai_cost_micro_usd, created_at]
+      properties:
+        id: { type: string }
+        file_name: { type: string }
+        rows_total: { type: integer, minimum: 0 }
+        rows_accepted: { type: integer, minimum: 0 }
+        rows_rejected: { type: integer, minimum: 0 }
+        row_errors: { type: array, items: { $ref: '#/components/schemas/UploadRowError' } }
+        ai_cost_micro_usd: { type: integer, minimum: 0, description: 'Total AI cost of this upload''s products (AC-US-00-011-4).' }
+        created_at: { type: string, format: date-time }
+      example:
+        id: '7'
+        file_name: products-autumn.csv
+        rows_total: 300
+        rows_accepted: 298
+        rows_rejected: 2
+        row_errors:
+          - { row_number: 17, sku: KU-104, reason: SKU already exists }
+          - { row_number: 40, sku: null, reason: sku is missing }
+        ai_cost_micro_usd: 4210000
+        created_at: 2026-10-04T08:05:00Z
+    ImagesCreate:
+      type: object
+      required: [files]
+      properties:
+        files:
+          type: array
+          items: { type: string, format: binary }
+          description: JPEG, PNG or WebP, at most 10 MB each.
+      example: { files: [KU-104_front.jpg, KU-104-back.jpg] }
+    ImagesResult:
+      type: object
+      required: [attached, unmatched_files, products_missing_image]
+      properties:
+        attached:
+          type: array
+          items:
+            type: object
+            required: [file_name, sku, position]
+            properties:
+              file_name: { type: string }
+              sku: { type: string }
+              position: { type: integer, minimum: 1 }
+        unmatched_files: { type: array, items: { type: string } }
+        products_missing_image: { type: array, items: { type: string }, description: SKUs still without an image; they are not sent for detection. }
+      example:
+        attached:
+          - { file_name: KU-104_front.jpg, sku: KU-104, position: 1 }
+          - { file_name: KU-104-back.jpg, sku: KU-104, position: 2 }
+        unmatched_files: [holiday-banner.png]
+        products_missing_image: [KU-210]
+    ProductAttributes:
+      type: object
+      required: [detection_status, revision, colour, pattern, sleeve, neckline, fit, detection_error]
+      properties:
+        detection_status: { $ref: '#/components/schemas/DetectionStatus' }
+        revision: { type: integer, minimum: 0 }
+        colour: { type: [string, 'null'] }
+        pattern: { type: [string, 'null'] }
+        sleeve: { type: [string, 'null'] }
+        neckline: { type: [string, 'null'] }
+        fit: { type: [string, 'null'] }
+        detection_error: { type: [string, 'null'] }
+      example:
+        detection_status: done
+        revision: 2
+        colour: black
+        pattern: solid
+        sleeve: three-quarter
+        neckline: round
+        fit: regular
+        detection_error: null
+    AttributesUpdate:
+      type: object
+      required: [revision]
+      minProperties: 2
+      properties:
+        revision: { type: integer, minimum: 0, description: The revision the reviewer saw. }
+        colour: { type: string, minLength: 1, maxLength: 100 }
+        pattern: { type: string, minLength: 1, maxLength: 100 }
+        sleeve: { type: string, minLength: 1, maxLength: 100 }
+        neckline: { type: string, minLength: 1, maxLength: 100 }
+        fit: { type: string, minLength: 1, maxLength: 100 }
+      example: { revision: 1, colour: black }
+    Product:
+      type: object
+      required: [id, sku, brand, category, price_minor, currency, image_count, attributes, ai_cost_micro_usd, created_at]
+      properties:
+        id: { type: string }
+        sku: { type: string }
+        brand: { type: object, required: [id, name], properties: { id: { type: string }, name: { type: string } } }
+        category: { type: string }
+        price_minor: { type: integer, minimum: 1 }
+        currency: { type: string, pattern: '^[A-Z]{3}$' }
+        image_count: { type: integer, minimum: 0, description: 0 means missing image (AC-US-00-001-5). }
+        attributes: { $ref: '#/components/schemas/ProductAttributes' }
+        ai_cost_micro_usd: { type: integer, minimum: 0, description: Sum of this product's AI calls (AC-US-00-011-3). }
+        created_at: { type: string, format: date-time }
+      example:
+        id: '104'
+        sku: KU-104
+        brand: { id: '3', name: Indigo Loom }
+        category: kurta
+        price_minor: 149900
+        currency: INR
+        image_count: 2
+        attributes: { detection_status: done, revision: 1, colour: navy, pattern: solid, sleeve: three-quarter, neckline: round, fit: regular, detection_error: null }
+        ai_cost_micro_usd: 14200
+        created_at: 2026-10-04T08:05:00Z
+    ProductPage:
+      type: object
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Product' } }
+        page: { $ref: '#/components/schemas/Page' }
+      example:
+        data:
+          - id: '104'
+            sku: KU-104
+            brand: { id: '3', name: Indigo Loom }
+            category: kurta
+            price_minor: 149900
+            currency: INR
+            image_count: 2
+            attributes: { detection_status: done, revision: 1, colour: navy, pattern: solid, sleeve: three-quarter, neckline: round, fit: regular, detection_error: null }
+            ai_cost_micro_usd: 14200
+            created_at: 2026-10-04T08:05:00Z
+        page: { next_cursor: eyJza3UiOiJLVS0xMDQifQ, has_more: true }
+    GenerationRunCreate:
+      type: object
+      required: [neutral_voice_confirmed]
+      properties:
+        neutral_voice_confirmed: { type: boolean, description: True confirms a neutral voice for brands with no voice note (AC-US-00-003-5). }
+        upload_id: { type: string, description: Limit the run to one upload's products; all products when omitted. }
+      example: { neutral_voice_confirmed: false, upload_id: '7' }
+    GenerationRun:
+      type: object
+      required: [id, created_at, detection, listings]
+      properties:
+        id: { type: string }
+        created_at: { type: string, format: date-time }
+        detection:
+          type: object
+          required: [pending, done, failed, stopped_budget]
+          properties:
+            pending: { type: integer }
+            done: { type: integer }
+            failed: { type: integer }
+            stopped_budget: { type: integer }
+        listings:
+          type: object
+          required: [queued, generated, failed, stopped_budget]
+          properties:
+            queued: { type: integer }
+            generated: { type: integer }
+            failed: { type: integer }
+            stopped_budget: { type: integer }
+      example:
+        id: '12'
+        created_at: 2026-10-04T08:30:00Z
+        detection: { pending: 40, done: 255, failed: 1, stopped_budget: 0 }
+        listings: { queued: 120, generated: 470, failed: 2, stopped_budget: 0 }
+    RuleFailure:
+      type: object
+      required: [rule, field, message]
+      properties:
+        rule: { type: string }
+        field: { type: string }
+        message: { type: string }
+      example: { rule: title_max_length, field: title, message: 'Title is 212 characters; the limit is 200.' }
+    Listing:
+      type: object
+      required: [id, product_id, sku, channel, status, failure_reason, version, title, bullets, description, rule_status, rule_failures, approved, approved_at, approved_by]
+      properties:
+        id: { type: string }
+        product_id: { type: string }
+        sku: { type: string }
+        channel: { type: string }
+        status: { $ref: '#/components/schemas/ListingStatus' }
+        failure_reason: { type: [string, 'null'] }
+        version: { type: integer, minimum: 0 }
+        title: { type: [string, 'null'] }
+        bullets:
+          type: [array, 'null']
+          minItems: 5
+          maxItems: 5
+          items: { type: string }
+        description: { type: [string, 'null'] }
+        rule_status: { $ref: '#/components/schemas/RuleStatus' }
+        rule_failures: { type: array, items: { $ref: '#/components/schemas/RuleFailure' } }
+        approved: { type: boolean, description: True only while an approval matches the current version. }
+        approved_at: { type: [string, 'null'], format: date-time }
+        approved_by: { type: [string, 'null'], description: Email of the approving reviewer. }
+      example:
+        id: '412'
+        product_id: '104'
+        sku: KU-104
+        channel: amazon_style
+        status: generated
+        failure_reason: null
+        version: 3
+        title: Women's Navy Cotton Kurta, Regular Fit, Three-Quarter Sleeve
+        bullets: [Soft breathable cotton, Regular fit, Three-quarter sleeves, Round neckline, Machine washable]
+        description: A navy cotton kurta cut for everyday wear.
+        rule_status: passing
+        rule_failures: []
+        approved: true
+        approved_at: 2026-10-04T10:12:00Z
+        approved_by: reviewer@catalift.example
+    ListingPage:
+      type: object
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Listing' } }
+        page: { $ref: '#/components/schemas/Page' }
+      example:
+        data:
+          - id: '413'
+            product_id: '104'
+            sku: KU-104
+            channel: own_website
+            status: generated
+            failure_reason: null
+            version: 1
+            title: Navy Cotton Kurta
+            bullets: [Soft cotton, Regular fit, Three-quarter sleeves, Round neck, Easy care]
+            description: Our everyday navy kurta.
+            rule_status: failing
+            rule_failures: [{ rule: banned_word, field: bullet_5, message: 'Banned word "easy care" in bullet_5.' }]
+            approved: false
+            approved_at: null
+            approved_by: null
+        page: { next_cursor: null, has_more: false }
+    ListingUpdate:
+      type: object
+      required: [version]
+      minProperties: 2
+      properties:
+        version: { type: integer, minimum: 1, description: The version the reviewer saw. }
+        title: { type: string, minLength: 1, maxLength: 500 }
+        bullet_1: { type: string, minLength: 1, maxLength: 1000 }
+        bullet_2: { type: string, minLength: 1, maxLength: 1000 }
+        bullet_3: { type: string, minLength: 1, maxLength: 1000 }
+        bullet_4: { type: string, minLength: 1, maxLength: 1000 }
+        bullet_5: { type: string, minLength: 1, maxLength: 1000 }
+        description: { type: string, minLength: 1, maxLength: 10000 }
+      example: { version: 2, title: 'Women''s Black Cotton Kurta, Regular Fit' }
+    RegenerationRequestCreate:
+      type: object
+      required: [field, instruction]
+      properties:
+        field: { type: string, enum: [title, bullet_1, bullet_2, bullet_3, bullet_4, bullet_5, description] }
+        instruction: { type: string, minLength: 1, maxLength: 1000 }
+      example: { field: title, instruction: 'Shorter, and mention cotton.' }
+    RegenerationRequest:
+      type: object
+      required: [id, listing_id, field, instruction, status, created_at]
+      properties:
+        id: { type: string }
+        listing_id: { type: string }
+        field: { type: string }
+        instruction: { type: string }
+        status: { $ref: '#/components/schemas/RegenerationStatus' }
+        created_at: { type: string, format: date-time }
+      example: { id: '55', listing_id: '412', field: title, instruction: 'Shorter, and mention cotton.', status: queued, created_at: 2026-10-04T10:00:00Z }
+    RegenerationRequestPage:
+      type: object
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/RegenerationRequest' } }
+        page: { $ref: '#/components/schemas/Page' }
+      example:
+        data:
+          - { id: '55', listing_id: '412', field: title, instruction: 'Shorter, and mention cotton.', status: superseded, created_at: 2026-10-04T10:00:00Z }
+        page: { next_cursor: null, has_more: false }
+    ApprovalBatchCreate:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            type: object
+            required: [listing_id, version]
+            properties:
+              listing_id: { type: string }
+              version: { type: integer, minimum: 1 }
+      example:
+        items:
+          - { listing_id: '412', version: 3 }
+          - { listing_id: '413', version: 1 }
+    ApprovalBatchResult:
+      type: object
+      required: [approved, skipped]
+      properties:
+        approved:
+          type: array
+          items:
+            type: object
+            required: [listing_id, version, approved_at]
+            properties:
+              listing_id: { type: string }
+              version: { type: integer }
+              approved_at: { type: string, format: date-time }
+        skipped:
+          type: array
+          items:
+            type: object
+            required: [listing_id, reason]
+            properties:
+              listing_id: { type: string }
+              reason: { type: string, enum: [failing_rules, version_changed, not_generated, not_found] }
+      example:
+        approved: [{ listing_id: '412', version: 3, approved_at: 2026-10-04T10:12:00Z }]
+        skipped: [{ listing_id: '413', reason: failing_rules }]
+    Channel:
+      type: object
+      required: [id, name, enabled, load_error, title_max_length, required_attributes, export_headers, last_recheck]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        enabled: { type: boolean }
+        load_error: { type: [string, 'null'], description: Why the file failed to load; the channel is disabled (D8). }
+        title_max_length: { type: [integer, 'null'] }
+        required_attributes: { type: array, items: { type: string } }
+        export_headers: { type: array, items: { type: string } }
+        last_recheck:
+          type: [object, 'null']
+          required: [config_hash, listings_rechecked, approvals_cleared, created_at]
+          properties:
+            config_hash: { type: string }
+            listings_rechecked: { type: integer }
+            approvals_cleared: { type: integer }
+            created_at: { type: string, format: date-time }
+      example:
+        id: amazon_style
+        name: Amazon-style marketplace
+        enabled: true
+        load_error: null
+        title_max_length: 200
+        required_attributes: [colour, fit]
+        export_headers: [sku, item_name, bullet_point_1, bullet_point_2, bullet_point_3, bullet_point_4, bullet_point_5, product_description, color, fit_type]
+        last_recheck: { config_hash: 9b1f2c, listings_rechecked: 300, approvals_cleared: 4, created_at: 2026-10-04T07:00:00Z }
+    ChannelPage:
+      type: object
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Channel' } }
+        page: { $ref: '#/components/schemas/Page' }
+      example:
+        data:
+          - { id: own_website, name: Own website, enabled: true, load_error: null, title_max_length: 120, required_attributes: [colour], export_headers: [sku, title, bullet_1, bullet_2, bullet_3, bullet_4, bullet_5, description], last_recheck: null }
+        page: { next_cursor: null, has_more: false }
+    Export:
+      type: object
+      required: [id, created_at, files, skipped_channels]
+      properties:
+        id: { type: string }
+        created_at: { type: string, format: date-time }
+        files:
+          type: array
+          items:
+            type: object
+            required: [channel, row_count, download_url]
+            properties:
+              channel: { type: string }
+              row_count: { type: integer, minimum: 1 }
+              download_url: { type: string }
+        skipped_channels:
+          type: array
+          items:
+            type: object
+            required: [channel, reason]
+            properties:
+              channel: { type: string }
+              reason: { type: string }
+      example:
+        id: '9'
+        created_at: 2026-10-04T11:00:00Z
+        files: [{ channel: amazon_style, row_count: 298, download_url: /v1/exports/9/files/amazon_style }]
+        skipped_channels: [{ channel: own_website, reason: no approved listings }]
+    Budget:
+      type: object
+      required: [limit_micro_usd, spent_micro_usd, blocked_at]
+      properties:
+        limit_micro_usd: { type: integer, minimum: 1 }
+        spent_micro_usd: { type: integer, minimum: 0 }
+        blocked_at: { type: [string, 'null'], format: date-time, description: Set on the first refused call; the banner shows while it is set. }
+      example: { limit_micro_usd: 8000000, spent_micro_usd: 4210000, blocked_at: null }
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [ok] }
+      example: { status: ok }
+  responses:
+    BadRequest:
+      description: Malformed request
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Unauthorized:
+      description: No session, or wrong email or password
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Forbidden:
+      description: Wrong role or missing CSRF token
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    NotFound:
+      description: No such record
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Conflict:
+      description: Idempotency key reused with a different body, or a stale version
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    PayloadTooLarge:
+      description: File over its size cap
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    UnsupportedMediaType:
+      description: Wrong file type
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    UnprocessableEntity:
+      description: Valid shape, but the content breaks a rule
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    TooManyRequests:
+      description: Rate limited; see Retry-After
+      headers:
+        Retry-After: { schema: { type: integer } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    InternalError:
+      description: Unexpected failure; request_id is in the body
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
