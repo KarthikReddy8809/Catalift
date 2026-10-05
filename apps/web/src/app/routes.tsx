@@ -126,7 +126,11 @@ export const designGalleryEnabled =
 const galleryIndexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/__design",
-  component: () => <GalleryIndex />,
+  component: () => (
+    <main className="mx-auto max-w-6xl px-4 py-8">
+      <GalleryIndex />
+    </main>
+  ),
 });
 
 const galleryScreenRoute = createRoute({
@@ -136,7 +140,12 @@ const galleryScreenRoute = createRoute({
   component: function GalleryScreenRoute() {
     const { id } = galleryScreenRoute.useParams();
     const search = galleryScreenRoute.useSearch();
-    return <GalleryScreen id={id} search={search} />;
+    // Screens bring their own frame and padding; only the state switcher needs a gutter.
+    return (
+      <div className="[&>div>[role=tablist]]:m-4">
+        <GalleryScreen id={id} search={search} />
+      </div>
+    );
   },
 });
 

@@ -16,12 +16,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/KarthikReddy8809/catalift/internal/auth"
-	"github.com/KarthikReddy8809/catalift/internal/catalogue"
-	"github.com/KarthikReddy8809/catalift/internal/channels"
-	"github.com/KarthikReddy8809/catalift/internal/exports"
-	"github.com/KarthikReddy8809/catalift/internal/generation"
-	"github.com/KarthikReddy8809/catalift/internal/listings"
+	"github.com/KarthikReddy8809/catalift/server/internal/auth"
+	"github.com/KarthikReddy8809/catalift/server/internal/catalogue"
+	"github.com/KarthikReddy8809/catalift/server/internal/channels"
+	"github.com/KarthikReddy8809/catalift/server/internal/exports"
+	"github.com/KarthikReddy8809/catalift/server/internal/generation"
+	"github.com/KarthikReddy8809/catalift/server/internal/listings"
 )
 
 // SessionCookie names the session cookie (ADR-0006).

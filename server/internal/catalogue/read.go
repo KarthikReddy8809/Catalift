@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/KarthikReddy8809/catalift/internal/store"
+	"github.com/KarthikReddy8809/catalift/server/internal/store"
 )
 
 // ErrBrandNotFound is an unknown brand id.

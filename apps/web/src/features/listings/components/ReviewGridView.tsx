@@ -1,3 +1,4 @@
+import { CheckCheck } from "lucide-react";
 import { useState } from "react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -85,11 +86,15 @@ export type ListingChanges = Partial<Record<ListingField, string>>;
 export interface ReviewGridActions {
   onFilterChange: (filter: "all" | "failing" | "unapproved") => void;
   onToggleSelect: (id: string, selected: boolean) => void;
+  /** Selects or clears several rows at once (the select-all checkbox). */
+  onSelectMany: (ids: string[], selected: boolean) => void;
   onOpen: (id: string) => void;
   onClose: () => void;
   onSave: (row: GridRow, changes: ListingChanges) => void;
   onRegenerate: (row: GridRow, field: ListingField, instruction: string) => void;
   onApprove: () => void;
+  /** Approves every listing that passes its rules and is not approved yet. */
+  onApproveAll: () => void;
   onReload: () => void;
   onGoToProducts: () => void;
   saving?: boolean | undefined;
@@ -181,7 +186,7 @@ function Editor({
   return (
     <form
       aria-labelledby="editor"
-      className="space-y-4 rounded-lg border p-4"
+      className="space-y-4 rounded-xl border bg-card p-5 shadow-sm lg:sticky lg:top-24 lg:max-h-[calc(100svh-7rem)] lg:overflow-y-auto"
       onSubmit={(e) => {
         e.preventDefault();
         const changes = changesFrom(row, new FormData(e.currentTarget));
@@ -364,6 +369,13 @@ export function ReviewGridView({
         : true,
   );
   const editing = rows.find((r) => r.id === editingId);
+  // Only a passing, not yet approved listing can be approved (Q-009).
+  const approvable = (r: GridRow) => r.ruleStatus === "passing" && !r.approved;
+  const readyAll = rows.filter(approvable).length;
+  const shownIds = shown.filter(approvable).map((r) => r.id);
+  const pickedShown = shownIds.filter((id) => selectedIds.includes(id)).length;
+  const allShown: boolean | "indeterminate" =
+    pickedShown === 0 ? false : pickedShown === shownIds.length ? true : "indeterminate";
   const failing = rows.filter((r) => r.ruleStatus === "failing").length;
   const approved = rows.filter((r) => r.approved).length;
 
@@ -377,13 +389,24 @@ export function ReviewGridView({
           </p>
         </div>
         {reviewer && status === "ready" ? (
-          <Button
-            className="h-11"
-            disabled={selectedIds.length === 0 || actions?.saving}
-            onClick={actions?.onApprove}
-          >
-            Approve {selectedIds.length} selected
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              className="h-11"
+              disabled={readyAll === 0 || actions?.saving}
+              onClick={actions?.onApproveAll}
+            >
+              <CheckCheck aria-hidden />
+              Approve all passing ({readyAll})
+            </Button>
+            <Button
+              className="h-11"
+              disabled={selectedIds.length === 0 || actions?.saving}
+              onClick={actions?.onApprove}
+            >
+              Approve {selectedIds.length} selected
+            </Button>
+          </div>
         ) : null}
       </header>
 
@@ -430,7 +453,7 @@ export function ReviewGridView({
           ))}
         </div>
       ) : status === "ready" && rows.length === 0 ? (
-        <div className="space-y-3 rounded-lg border p-8">
+        <div className="space-y-3 rounded-xl border bg-card p-8 shadow-sm">
           <h2 className="font-medium">Nothing to review yet</h2>
           <p className="max-w-prose text-muted-foreground">
             Listings appear here as generation writes them. Start generation from Products.
@@ -455,19 +478,54 @@ export function ReviewGridView({
               </TabsList>
             </Tabs>
 
+            {reviewer && shownIds.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-card px-3 py-2 text-sm shadow-sm">
+                <Checkbox
+                  id="select-all"
+                  className="size-5"
+                  checked={allShown}
+                  onCheckedChange={(v) => actions?.onSelectMany(shownIds, v === true)}
+                  aria-label="Select every passing listing shown"
+                />
+                <label htmlFor="select-all" className="cursor-pointer">
+                  Select all passing ({shownIds.length})
+                </label>
+                {selectedIds.length > 0 ? (
+                  <>
+                    <span className="text-muted-foreground tabular-nums">
+                      &middot; {selectedIds.length} selected
+                    </span>
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="h-auto p-0"
+                      onClick={() => actions?.onSelectMany(selectedIds, false)}
+                    >
+                      Clear
+                    </Button>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+
             {shown.length === 0 ? (
-              <p className="rounded-lg border p-6 text-muted-foreground">
+              <p className="rounded-xl border bg-card p-6 text-muted-foreground shadow-sm">
                 No listings match this filter. Every listing passes its channel&rsquo;s rules.
               </p>
             ) : (
               <>
-                <div className="hidden md:block">
+                <div className="hidden overflow-x-auto rounded-xl border bg-card shadow-sm md:block">
                   <Table>
                     <TableHeader>
                       <TableRow>
                         {reviewer ? (
                           <TableHead className="w-10">
-                            <span className="sr-only">Select</span>
+                            <Checkbox
+                              checked={allShown}
+                              disabled={shownIds.length === 0}
+                              onCheckedChange={(v) => actions?.onSelectMany(shownIds, v === true)}
+                              aria-label="Select every passing listing in the table"
+                            />
                           </TableHead>
                         ) : null}
                         <TableHead>SKU</TableHead>
@@ -523,7 +581,7 @@ export function ReviewGridView({
                 </div>
                 <ul className="space-y-2 md:hidden" aria-label="Listings">
                   {shown.map((r) => (
-                    <li key={r.id} className="space-y-2 rounded-lg border p-3">
+                    <li key={r.id} className="space-y-2 rounded-xl border bg-card p-3 shadow-sm">
                       <div className="flex items-center justify-between gap-2">
                         {reviewer ? (
                           <Checkbox

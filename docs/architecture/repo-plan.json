@@ -6,7 +6,7 @@
       "name": "CataliftApp",
       "git_path": "Catalift/Server/CataliftApp",
       "stack": "none",
-      "stack_note": "one repository combining three kit stacks in subdirectories: react-web in apps/web, go-api in cmd/ and internal/, infra (Terraform part only) in infra/; scaffold each subdirectory from its kit",
+      "stack_note": "one repository combining three kit stacks in subdirectories: react-web in apps/web, go-api in server/ (its own Go module), infra (Terraform part only) in infra/; scaffold each subdirectory from its kit",
       "tech": "React, TypeScript, Vite, Tailwind CSS, shadcn/ui, TanStack Query and Table, axios; Go, net/http, pgx, sqlc, goose, slog; Terraform (GCS state), GitLab CI, docker compose, Ops Agent and Cloud Monitoring alert policies",
       "responsibility": "The whole of Catalift: the web app, the domain REST APIs (auth, catalogue, listings, export, cost), the rules engine, the job worker, the AI gateway, the infrastructure and the deploy pipeline; owns the database schema",
       "apps": [
@@ -16,12 +16,12 @@
           "for": "sellers uploading launches and reviewers editing, approving and exporting listings"
         },
         {
-          "path": "cmd/api",
+          "path": "server/cmd/api",
           "name": "Catalift API",
           "for": "the web app over /v1 REST"
         },
         {
-          "path": "cmd/worker",
+          "path": "server/cmd/worker",
           "name": "Catalift Worker",
           "for": "background detection, generation and regeneration jobs"
         },

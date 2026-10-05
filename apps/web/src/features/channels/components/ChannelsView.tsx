@@ -66,7 +66,7 @@ export function ChannelsView({ status, channels = [], requestId }: ChannelsViewP
           <Skeleton className="h-12 w-full" />
         </div>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto rounded-xl border bg-card shadow-sm">
           <Table>
             <TableHeader>
               <TableRow>

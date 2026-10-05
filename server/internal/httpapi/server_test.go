@@ -13,7 +13,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/KarthikReddy8809/catalift/internal/health"
+	"github.com/KarthikReddy8809/catalift/server/internal/health"
 )
 
 type fakeChecker struct {

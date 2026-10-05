@@ -31,7 +31,7 @@ describe("App", () => {
     renderAt("/");
 
     expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
-    expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
   });
 
   it("renders the not-found route for an unknown path", async () => {

@@ -50,7 +50,7 @@ help: ## List targets
 setup: ## Install dependencies (writes pnpm-lock.yaml), Playwright chromium and git hooks
 	@if [ -f pnpm-lock.yaml ]; then $(PNPM) install --frozen-lockfile; else echo "setup: no pnpm-lock.yaml yet, installing unfrozen; commit the lockfile it writes"; $(PNPM) install; fi
 	$(PNPM) exec playwright install chromium
-	bash .githooks/install.sh
+	bash ../../.githooks/install.sh
 	@echo "setup done"
 
 dev: ## Run the Vite dev server (reads .env if present)

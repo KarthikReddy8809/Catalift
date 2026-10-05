@@ -1,32 +1,23 @@
-import { Link, Outlet } from "@tanstack/react-router";
+import { Outlet } from "@tanstack/react-router";
 import { Suspense } from "react";
 
 /**
- * RootLayout frames every route: header with navigation, then the outlet.
- * The Suspense boundary is where a lazy route or a useSuspenseQuery waits,
- * so the header stays put while a page loads.
+ * RootLayout frames every route. Signed-in pages bring their own header and
+ * navigation (AppFrame); sign-in and the design gallery lay themselves out.
+ * The Suspense boundary is where a lazy route or a useSuspenseQuery waits.
  */
 export function RootLayout() {
   return (
     <div className="min-h-svh bg-background text-foreground">
-      <header className="border-b">
-        <nav aria-label="Main" className="mx-auto flex max-w-5xl items-center gap-4 px-4 py-3">
-          <Link to="/" className="font-semibold">
-            Catalift
-          </Link>
-        </nav>
-      </header>
-      <main className="mx-auto max-w-5xl px-4 py-8">
-        <Suspense
-          fallback={
-            <p role="status" aria-live="polite" className="text-muted-foreground">
-              Loading
-            </p>
-          }
-        >
-          <Outlet />
-        </Suspense>
-      </main>
+      <Suspense
+        fallback={
+          <p role="status" aria-live="polite" className="p-8 text-muted-foreground">
+            Loading
+          </p>
+        }
+      >
+        <Outlet />
+      </Suspense>
     </div>
   );
 }

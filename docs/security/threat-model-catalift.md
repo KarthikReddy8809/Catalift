@@ -22,7 +22,7 @@ Scope: the whole system as designed. One Go API and worker, one Postgres, a Reac
 | Export CSVs | export files on the data disk, downloaded by reviewers | backend lead rotation | plant formulas that run when the file is opened, or read the launch early |
 | Database, data disk and dumps | Postgres on the protected data disk; nightly dumps in a Cloud Storage bucket | operator rotation | read or destroy everything at once |
 | Google Cloud project via the CI identity | Workload Identity Federation pool and CI service account (D10) | operator rotation | take over or delete the infrastructure |
-| Channel rules | config/channels/*.yaml in the repository (REQ-017) | product owner role | loosen rules so non-compliant listings pass |
+| Channel rules | server/config/channels/*.yaml in the repository (REQ-017) | product owner role | loosen rules so non-compliant listings pass |
 
 ## 2. Trust boundaries
 

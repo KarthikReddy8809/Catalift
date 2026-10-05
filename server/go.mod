@@ -1,4 +1,4 @@
-module github.com/KarthikReddy8809/catalift
+module github.com/KarthikReddy8809/catalift/server
 
 go 1.26.8
 

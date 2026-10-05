@@ -19,7 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/argon2"
 
-	"github.com/KarthikReddy8809/catalift/internal/store"
+	"github.com/KarthikReddy8809/catalift/server/internal/store"
 )
 
 // Role is seller or reviewer (ADR-0006).

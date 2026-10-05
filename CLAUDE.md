@@ -6,12 +6,12 @@ Claude Code specifics for this repository; the standard is AGENTS.md above.
 Loaded into every session: keep this file under 40 lines.
 
 ```
-Repository:   catalift, one repo (eng review D4): Go API and worker at the root,
-              web app in apps/web (React, Vite), Terraform in infra/
+Repository:   catalift, one repo (eng review D4): Go API and worker in server/
+              (its own module), web app in apps/web (React, Vite), Terraform in infra/
 Stack:        Go 1.26.8 + net/http + pgx + sqlc + goose + slog; React + TanStack; Terraform 1.9
 Databases:    PostgreSQL
-Entrypoint:   cmd/api/main.go (cmd/worker planned); apps/web/src/main.tsx
-Run, test:    make dev, make test; gate: make check (root), and in apps/web, infra
+Entrypoint:   server/cmd/api, server/cmd/worker, server/cmd/admin; apps/web/src/main.tsx
+Run, test:    make dev (server), make web-dev; gate: make check (root runs server and web), infra separately
 Git host:     github, github.com/KarthikReddy8809/catalift (ADR-0011)
 Tracker:      none (BEARING_TRACKER; none is valid)
 Trunk:        main (no develop branch)

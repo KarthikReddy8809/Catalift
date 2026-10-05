@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/KarthikReddy8809/catalift/internal/store"
+	"github.com/KarthikReddy8809/catalift/server/internal/store"
 )
 
 // GridRow is one listing as the review grid shows it.

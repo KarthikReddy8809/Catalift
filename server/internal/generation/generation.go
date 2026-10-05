@@ -14,10 +14,10 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/KarthikReddy8809/catalift/internal/ai"
-	"github.com/KarthikReddy8809/catalift/internal/channels"
-	"github.com/KarthikReddy8809/catalift/internal/listings"
-	"github.com/KarthikReddy8809/catalift/internal/store"
+	"github.com/KarthikReddy8809/catalift/server/internal/ai"
+	"github.com/KarthikReddy8809/catalift/server/internal/channels"
+	"github.com/KarthikReddy8809/catalift/server/internal/listings"
+	"github.com/KarthikReddy8809/catalift/server/internal/store"
 )
 
 // VoiceNoteRequiredError names the brands that have no voice note

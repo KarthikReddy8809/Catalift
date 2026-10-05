@@ -1,10 +1,13 @@
-# CataliftApp (Go service). Every command lives here. `make help` lists them.
+# Catalift server: the Go API, worker and admin command. Every server command
+# lives here; the root Makefile runs this one and the web app's. `make help`
+# lists them. Shared files stay at the repository root: .env, docker-compose.yml.
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 GOFLAGS ?=
 PKG := ./...
 BIN := bin/api
-STATE := .bearing/state
+STATE := ../.bearing/state/server
+COMPOSE := docker compose -f ../docker-compose.yml
 SKIPPED := $(STATE)/.skipped
 # The gates `make check` runs, in order. test-integration needs Postgres, so
 # it is a CI job and a manual target, not part of check.
@@ -31,7 +34,7 @@ setup: ## Tidy both modules (writes go.sum and tools/go.sum), install the pinned
 	go mod tidy
 	go -C tools mod tidy
 	@$(MAKE) --no-print-directory tools
-	bash .githooks/install.sh
+	bash ../.githooks/install.sh
 	@echo "setup done; commit go.sum and tools/go.sum if they changed"
 
 tools: ## Install the tools pinned in tools/go.mod into bin/tools
@@ -41,8 +44,8 @@ tools: ## Install the tools pinned in tools/go.mod into bin/tools
 	[ "$$n" -gt 0 ] || { echo "tools: 0 tools installed from tools/go.mod" >&2; exit 1; }; \
 	echo "tools: $$n tools installed from tools/go.mod"
 
-dev: ## Run the API locally (reads .env if present)
-	@set -a; [ -f .env ] && . ./.env; set +a; go run ./cmd/api
+dev: ## Run the API and the worker locally (reads ../.env if present)
+	@set -a; [ -f ../.env ] && . ../.env; set +a; trap 'kill 0' EXIT; go run ./cmd/worker & go run ./cmd/api
 
 build: ## Build the binary
 	CGO_ENABLED=0 go build $(GOFLAGS) -ldflags="-s -w -X main.version=$$(git describe --tags --always --dirty)" -o $(BIN) ./cmd/api
@@ -106,10 +109,10 @@ fix: fmt ## Apply every automatic fix
 	@command -v golangci-lint >/dev/null && golangci-lint run --fix ./... || true
 
 db: ## Start Postgres in Docker
-	docker compose up -d postgres
+	$(COMPOSE) up -d postgres
 
 db-reset: ## Drop and recreate the local database (destructive)
-	docker compose down -v && docker compose up -d postgres
+	$(COMPOSE) down -v && $(COMPOSE) up -d postgres
 
 migrate: ## goose up
 	goose -dir db/migrations postgres "$(DATABASE_URL)" up

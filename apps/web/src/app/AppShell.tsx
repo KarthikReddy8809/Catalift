@@ -4,6 +4,7 @@ import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { sessionKeys, sessionQueryOptions, signOut } from "@/features/auth/api";
 import { budgetQueryOptions } from "@/features/shell/api";
 import { AppFrame, type NavKey } from "@/features/shell/components/AppFrame";
+import { useTheme } from "@/lib/theme";
 
 import { SCREEN_PATH } from "./screen-paths";
 
@@ -25,6 +26,7 @@ export function AppShell() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const { theme, toggle } = useTheme();
 
   if (!session) return null;
   const b = budget.data;
@@ -39,6 +41,8 @@ export function AppShell() {
         blockedAt: b?.blocked_at ?? null,
       }}
       hrefFor={(screen) => SCREEN_PATH[screen] ?? "/"}
+      theme={theme}
+      onToggleTheme={toggle}
       onNavigate={(href) => {
         void navigate({ to: href });
       }}

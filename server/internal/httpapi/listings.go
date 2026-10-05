@@ -7,9 +7,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/KarthikReddy8809/catalift/internal/auth"
-	"github.com/KarthikReddy8809/catalift/internal/listings"
-	"github.com/KarthikReddy8809/catalift/internal/store"
+	"github.com/KarthikReddy8809/catalift/server/internal/auth"
+	"github.com/KarthikReddy8809/catalift/server/internal/listings"
+	"github.com/KarthikReddy8809/catalift/server/internal/store"
 )
 
 const maxApprovalsPerCall = 500

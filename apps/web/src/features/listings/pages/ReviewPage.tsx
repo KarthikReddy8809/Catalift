@@ -112,6 +112,11 @@ export function ReviewPage() {
       onToggleSelect: (id, on) => {
         setSelected((cur) => (on ? [...new Set([...cur, id])] : cur.filter((x) => x !== id)));
       },
+      onSelectMany: (ids, on) => {
+        setSelected((cur) =>
+          on ? [...new Set([...cur, ...ids])] : cur.filter((x) => !ids.includes(x)),
+        );
+      },
       onOpen: (id) => {
         setConflict(false);
         setEditingId(id);
@@ -132,6 +137,13 @@ export function ReviewPage() {
             const r = byId.get(id);
             return r ? [{ listing_id: id, version: r.version }] : [];
           }),
+        );
+      },
+      onApproveAll: () => {
+        approval.mutate(
+          rows
+            .filter((r) => r.ruleStatus === "passing" && !r.approved)
+            .map((r) => ({ listing_id: r.id, version: r.version })),
         );
       },
       onReload: () => {

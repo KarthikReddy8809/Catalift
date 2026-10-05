@@ -10,9 +10,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/KarthikReddy8809/catalift/internal/auth"
-	"github.com/KarthikReddy8809/catalift/internal/catalogue"
-	"github.com/KarthikReddy8809/catalift/internal/store"
+	"github.com/KarthikReddy8809/catalift/server/internal/auth"
+	"github.com/KarthikReddy8809/catalift/server/internal/catalogue"
+	"github.com/KarthikReddy8809/catalift/server/internal/store"
 )
 
 // Upload caps (T-11, T-16): the whole multipart body, and photos per request.

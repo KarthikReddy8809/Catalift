@@ -12,8 +12,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	"github.com/KarthikReddy8809/catalift/internal/health"
-	"github.com/KarthikReddy8809/catalift/internal/middleware"
+	"github.com/KarthikReddy8809/catalift/server/internal/health"
+	"github.com/KarthikReddy8809/catalift/server/internal/middleware"
 )
 
 // New builds the HTTP handler. The chain, outermost first: request id, panic

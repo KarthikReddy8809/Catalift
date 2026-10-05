@@ -84,42 +84,44 @@ export function ExportView({
         </Alert>
       ) : null}
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Channel</TableHead>
-            <TableHead className="text-right">Approved</TableHead>
-            <TableHead className="text-right">Not yet</TableHead>
-            <TableHead>File</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {channels.map((c) => {
-            const file = files.find((f) => f.channel === c.channel);
-            const skip = skipped.find((s) => s.name === c.name);
-            return (
-              <TableRow key={c.channel}>
-                <TableCell className="font-medium">{c.name}</TableCell>
-                <TableCell className="text-right tabular-nums">{c.approved}</TableCell>
-                <TableCell className="text-right tabular-nums">{c.total - c.approved}</TableCell>
-                <TableCell>
-                  {file ? (
-                    <Button asChild variant="link" className="h-11 px-0">
-                      <a href={file.downloadUrl} download>
-                        Download {file.name} CSV ({file.rowCount} rows)
-                      </a>
-                    </Button>
-                  ) : skip ? (
-                    <span className="text-muted-foreground">No file: {skip.reason}</span>
-                  ) : (
-                    <span className="text-muted-foreground">Not exported yet</span>
-                  )}
-                </TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
+      <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Channel</TableHead>
+              <TableHead className="text-right">Approved</TableHead>
+              <TableHead className="text-right">Not yet</TableHead>
+              <TableHead>File</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {channels.map((c) => {
+              const file = files.find((f) => f.channel === c.channel);
+              const skip = skipped.find((s) => s.name === c.name);
+              return (
+                <TableRow key={c.channel}>
+                  <TableCell className="font-medium">{c.name}</TableCell>
+                  <TableCell className="text-right tabular-nums">{c.approved}</TableCell>
+                  <TableCell className="text-right tabular-nums">{c.total - c.approved}</TableCell>
+                  <TableCell>
+                    {file ? (
+                      <Button asChild variant="link" className="h-11 px-0">
+                        <a href={file.downloadUrl} download>
+                          Download {file.name} CSV ({file.rowCount} rows)
+                        </a>
+                      </Button>
+                    ) : skip ? (
+                      <span className="text-muted-foreground">No file: {skip.reason}</span>
+                    ) : (
+                      <span className="text-muted-foreground">Not exported yet</span>
+                    )}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
       <p className="text-sm text-muted-foreground">
         Listings edited after approval are left out until they are approved again. Cells that start
         with =, +, - or @ are escaped so spreadsheets do not run them.

@@ -13,7 +13,7 @@ deliverables/
 /.ripgreprc
 /.gitconfig
 # Go: build output and the pinned tools make tools installs.
-bin/
+/server/bin/
 # make dev reads .env, copied from .env.example; the copy holds real keys.
 .env
 .env.*
@@ -28,4 +28,4 @@ infra/**/.terraform/
 infra/envs/prod/terraform.tfvars
 
 # Uploaded photos and export files from local runs (DATA_DIR)
-/data/
+/server/data/

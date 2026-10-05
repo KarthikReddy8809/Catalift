@@ -3,7 +3,7 @@
 // govulncheck scan and image. `make tools` installs every tool below into
 // bin/tools at these versions. Bump one with
 // `go -C tools get -tool <package>@<version>` and commit tools/go.sum.
-module github.com/KarthikReddy8809/catalift/tools
+module github.com/KarthikReddy8809/catalift/server/tools
 
 go 1.26.8
 

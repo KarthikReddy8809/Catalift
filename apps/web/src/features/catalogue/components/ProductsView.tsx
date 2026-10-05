@@ -89,7 +89,7 @@ function RunPanel({
   return (
     <section
       aria-labelledby="run"
-      className="grid gap-4 rounded-lg border p-4 md:grid-cols-[1fr_1fr_auto] md:items-end"
+      className="grid gap-4 rounded-xl border bg-card p-5 shadow-sm md:grid-cols-[1fr_1fr_auto] md:items-end"
     >
       <h2 id="run" className="sr-only">
         Generation progress
@@ -217,7 +217,7 @@ export function ProductsView({
           ))}
         </div>
       ) : status === "ready" && products.length === 0 ? (
-        <div className="space-y-3 rounded-lg border p-8">
+        <div className="space-y-3 rounded-xl border bg-card p-8 shadow-sm">
           <h2 className="font-medium">No products yet</h2>
           <p className="max-w-prose text-muted-foreground">
             Upload the launch&rsquo;s product list and photos; products appear here as soon as the
@@ -229,7 +229,7 @@ export function ProductsView({
         </div>
       ) : status === "ready" ? (
         <>
-          <div className="hidden md:block">
+          <div className="hidden overflow-x-auto rounded-xl border bg-card shadow-sm md:block">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -280,7 +280,7 @@ export function ProductsView({
 
           <ul className="space-y-2 md:hidden" aria-label="Products">
             {products.map((p) => (
-              <li key={p.sku} className="space-y-1 rounded-lg border p-3">
+              <li key={p.sku} className="space-y-1 rounded-xl border bg-card p-3 shadow-sm">
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-medium">{p.sku}</span>
                   <DetectionBadge status={p.detection} />

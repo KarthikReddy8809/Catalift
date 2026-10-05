@@ -76,10 +76,22 @@ export const approvalResultSchema = z.object({
 
 export type ApprovalResult = z.infer<typeof approvalResultSchema>;
 
-export function approve(items: { listing_id: string; version: number }[]): Promise<ApprovalResult> {
-  return apiSend("/v1/approvals", approvalResultSchema, {
-    method: "POST",
-    body: { items },
-    idempotent: true,
-  });
+/** The API approves at most this many listings per call. */
+const APPROVE_BATCH = 500;
+
+/** approve sends the items in batches of 500 and merges the results. */
+export async function approve(
+  items: { listing_id: string; version: number }[],
+): Promise<ApprovalResult> {
+  const out: ApprovalResult = { approved: [], skipped: [] };
+  for (let i = 0; i < items.length; i += APPROVE_BATCH) {
+    const res = await apiSend("/v1/approvals", approvalResultSchema, {
+      method: "POST",
+      body: { items: items.slice(i, i + APPROVE_BATCH) },
+      idempotent: true,
+    });
+    out.approved.push(...res.approved);
+    out.skipped.push(...res.skipped);
+  }
+  return out;
 }

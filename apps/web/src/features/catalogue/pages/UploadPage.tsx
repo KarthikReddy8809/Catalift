@@ -64,6 +64,7 @@ export function UploadPage() {
     onUploadImages: (files) => {
       photos.mutate(files);
     },
+    imagesUploading: photos.isPending,
     onDone: () => {
       void navigate({ to: "/products", search: upload ? { upload: upload.id } : {} });
     },
@@ -87,6 +88,7 @@ export function UploadPage() {
       attached: images.attached.length,
       unmatchedFiles: images.unmatched_files,
       productsMissingImage: images.products_missing_image,
+      attachedFiles: images.attached.map((a) => ({ fileName: a.file_name, sku: a.sku })),
       rejectedFiles: images.rejected_files.map((f) => ({
         fileName: f.file_name,
         reason: f.reason,

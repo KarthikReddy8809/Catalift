@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/KarthikReddy8809/catalift/internal/ai"
+	"github.com/KarthikReddy8809/catalift/server/internal/ai"
 )
 
 func TestDecide(t *testing.T) {

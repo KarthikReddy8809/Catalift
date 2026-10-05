@@ -20,7 +20,7 @@ import (
 
 	_ "golang.org/x/image/webp" // decoder for uploaded photos
 
-	"github.com/KarthikReddy8809/catalift/internal/store"
+	"github.com/KarthikReddy8809/catalift/server/internal/store"
 )
 
 // Limits on uploads (HLD section 9, T-11, T-16).

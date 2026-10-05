@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/KarthikReddy8809/catalift/internal/ai"
+	"github.com/KarthikReddy8809/catalift/server/internal/ai"
 )
 
 // Retry policy (HLD section 6; eng review D14, D15).

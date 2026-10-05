@@ -10,12 +10,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/KarthikReddy8809/catalift/internal/ai"
-	"github.com/KarthikReddy8809/catalift/internal/catalogue"
-	"github.com/KarthikReddy8809/catalift/internal/exports"
-	"github.com/KarthikReddy8809/catalift/internal/generation"
-	"github.com/KarthikReddy8809/catalift/internal/listings"
-	"github.com/KarthikReddy8809/catalift/internal/middleware"
+	"github.com/KarthikReddy8809/catalift/server/internal/ai"
+	"github.com/KarthikReddy8809/catalift/server/internal/catalogue"
+	"github.com/KarthikReddy8809/catalift/server/internal/exports"
+	"github.com/KarthikReddy8809/catalift/server/internal/generation"
+	"github.com/KarthikReddy8809/catalift/server/internal/listings"
+	"github.com/KarthikReddy8809/catalift/server/internal/middleware"
 )
 
 // detail names the field a validation error is about.

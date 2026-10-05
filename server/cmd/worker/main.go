@@ -10,11 +10,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/KarthikReddy8809/catalift/internal/ai"
-	"github.com/KarthikReddy8809/catalift/internal/channels"
-	"github.com/KarthikReddy8809/catalift/internal/config"
-	"github.com/KarthikReddy8809/catalift/internal/store"
-	"github.com/KarthikReddy8809/catalift/internal/worker"
+	"github.com/KarthikReddy8809/catalift/server/internal/ai"
+	"github.com/KarthikReddy8809/catalift/server/internal/channels"
+	"github.com/KarthikReddy8809/catalift/server/internal/config"
+	"github.com/KarthikReddy8809/catalift/server/internal/store"
+	"github.com/KarthikReddy8809/catalift/server/internal/worker"
 )
 
 func main() {

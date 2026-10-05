@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/KarthikReddy8809/catalift/internal/auth"
-	"github.com/KarthikReddy8809/catalift/internal/exports"
-	"github.com/KarthikReddy8809/catalift/internal/generation"
+	"github.com/KarthikReddy8809/catalift/server/internal/auth"
+	"github.com/KarthikReddy8809/catalift/server/internal/exports"
+	"github.com/KarthikReddy8809/catalift/server/internal/generation"
 )
 
 func runJSON(p generation.Progress) map[string]any {

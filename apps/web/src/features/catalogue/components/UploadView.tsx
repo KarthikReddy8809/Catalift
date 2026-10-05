@@ -13,6 +13,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
+import { PhotoPicker } from "./PhotoPicker";
+
 export interface RowError {
   rowNumber: number;
   sku: string | null;
@@ -31,6 +33,8 @@ export interface ImagesSummary {
   attached: number;
   unmatchedFiles: string[];
   productsMissingImage: string[];
+  /** Which photo went to which SKU, so the seller can check the mapping. */
+  attachedFiles?: { fileName: string; sku: string }[] | undefined;
   /** Photos that matched a SKU but were refused (type or size). */
   rejectedFiles?: { fileName: string; reason: string }[] | undefined;
 }
@@ -52,6 +56,8 @@ export interface UploadViewProps {
   onUploadCsv?: (file: File) => void;
   /** Called with the chosen photos. */
   onUploadImages?: (files: File[]) => void;
+  /** The photos are on their way. */
+  imagesUploading?: boolean;
   /** Leaves for the products screen. */
   onDone?: () => void;
 }
@@ -60,6 +66,13 @@ export interface UploadViewProps {
 function filesOf(form: HTMLFormElement, name: string): File[] {
   const input = form.elements.namedItem(name);
   return input instanceof HTMLInputElement && input.files ? Array.from(input.files) : [];
+}
+
+/** bySku groups attached photos under their SKU, in SKU order. */
+function bySku(files: { fileName: string; sku: string }[]): [string, string[]][] {
+  const groups = new Map<string, string[]>();
+  for (const f of files) groups.set(f.sku, [...(groups.get(f.sku) ?? []), f.fileName]);
+  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
 }
 
 function problemText(p: UploadProblem): { title: string; body: string } {
@@ -101,6 +114,7 @@ export function UploadView({
   problem,
   onUploadCsv,
   onUploadImages,
+  imagesUploading = false,
   onDone,
 }: UploadViewProps) {
   const p = problem ? problemText(problem) : null;
@@ -109,8 +123,9 @@ export function UploadView({
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold tracking-tight">Upload a launch</h1>
         <p className="max-w-prose text-muted-foreground">
-          First the product list as CSV with columns sku, category, brand and price. Then the
-          photos, named after their SKU, such as <code>KU-104_front.jpg</code>.
+          First the product list as CSV with columns sku, category, brand and price. Then the folder
+          of photos: each file name starts with its SKU, such as <code>KU-104_front.jpg</code> or{" "}
+          <code>KU-104-2.png</code>, and is matched to that product.
         </p>
       </header>
 
@@ -122,7 +137,10 @@ export function UploadView({
       ) : null}
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <section aria-labelledby="csv-step" className="space-y-3 rounded-lg border p-4">
+        <section
+          aria-labelledby="csv-step"
+          className="space-y-3 rounded-xl border bg-card p-5 shadow-sm"
+        >
           <h2 id="csv-step" className="font-medium">
             1. Product list
           </h2>
@@ -189,7 +207,10 @@ export function UploadView({
           )}
         </section>
 
-        <section aria-labelledby="img-step" className="space-y-3 rounded-lg border p-4">
+        <section
+          aria-labelledby="img-step"
+          className="space-y-3 rounded-xl border bg-card p-5 shadow-sm"
+        >
           <h2 id="img-step" className="font-medium">
             2. Photos
           </h2>
@@ -199,6 +220,28 @@ export function UploadView({
                 <span className="tabular-nums">{images.attached}</span> photos attached to their
                 products.
               </p>
+              {images.attachedFiles && images.attachedFiles.length > 0 ? (
+                <div className="max-h-64 overflow-y-auto rounded-lg border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>SKU</TableHead>
+                        <TableHead>Photos</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {bySku(images.attachedFiles).map(([sku, files]) => (
+                        <TableRow key={sku}>
+                          <TableCell className="font-medium">{sku}</TableCell>
+                          <TableCell className="whitespace-normal text-muted-foreground">
+                            {files.join(", ")}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              ) : null}
               {images.unmatchedFiles.length > 0 ? (
                 <div className="space-y-1">
                   <p className="font-medium">Not matched to any SKU</p>
@@ -239,27 +282,7 @@ export function UploadView({
               </Button>
             </div>
           ) : summary ? (
-            <form
-              className="space-y-2"
-              onSubmit={(e) => {
-                e.preventDefault();
-                const files = filesOf(e.currentTarget, "photos");
-                if (files.length > 0) onUploadImages?.(files);
-              }}
-            >
-              <Label htmlFor="img-files">JPEG, PNG or WebP, up to 10 MB each</Label>
-              <Input
-                id="img-files"
-                name="photos"
-                type="file"
-                multiple
-                accept="image/jpeg,image/png,image/webp"
-                className="h-11"
-              />
-              <Button type="submit" className="h-11">
-                Upload photos
-              </Button>
-            </form>
+            <PhotoPicker onUpload={onUploadImages} busy={imagesUploading} />
           ) : (
             <p className="text-sm text-muted-foreground">
               Available once the product list is uploaded, so each photo can find its SKU.

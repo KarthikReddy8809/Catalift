@@ -58,7 +58,7 @@ linters:
         - errors.New(
         - errors.Join(
       ignore-package-globs:
-        - "github.com/KarthikReddy8809/catalift/*"
+        - "github.com/KarthikReddy8809/catalift/server/*"
   exclusions:
     rules:
       - path: _test\.go
@@ -69,4 +69,4 @@ formatters:
   enable: [gofmt, goimports]
   settings:
     goimports:
-      local-prefixes: ["github.com/KarthikReddy8809/catalift"]
+      local-prefixes: ["github.com/KarthikReddy8809/catalift/server"]

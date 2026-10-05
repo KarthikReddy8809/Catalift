@@ -1,5 +1,5 @@
 import { createMemoryHistory } from "@tanstack/react-router";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -360,17 +360,45 @@ describe("upload", () => {
     await user.click(screen.getByRole("button", { name: "Upload product list" }));
     expect(await screen.findByText("SKU already exists")).toBeInTheDocument();
 
-    await user.upload(
-      screen.getByLabelText("JPEG, PNG or WebP, up to 10 MB each"),
+    await user.upload(screen.getByLabelText("Photos folder"), [
       new File(["png"], "KU-101_front.png", { type: "image/png" }),
-    );
-    await user.click(screen.getByRole("button", { name: "Upload photos" }));
+      new File(["x"], ".DS_Store"),
+    ]);
+    expect(screen.getByText(/other files left out/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Upload 1 photos" }));
 
     expect(await screen.findByText("banner.png")).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "KU-101_front.png" })).toBeInTheDocument();
     expect(screen.getByText(/KU-101.gif/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Go to products" }));
     expect(await screen.findByRole("heading", { name: "Products" })).toBeInTheDocument();
     expect(fake.csrfSeen).toEqual(["csrf-1", "csrf-1"]);
+  });
+
+  it("takes photos dropped on the picker and can clear them", async () => {
+    const user = userEvent.setup();
+    renderAt("/upload");
+    await user.upload(
+      await screen.findByLabelText("CSV file, up to 5 MB"),
+      new File(["sku,category,brand,price\n"], "launch.csv", { type: "text/csv" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Upload product list" }));
+    const zone = await screen.findByRole("group", { name: "Drop photos here" });
+
+    fireEvent.dragOver(zone);
+    fireEvent.drop(zone, {
+      dataTransfer: {
+        items: [],
+        files: [
+          new File(["a"], "KU-101_front.jpg", { type: "image/jpeg" }),
+          new File(["b"], "KU-101_back.webp", { type: "image/webp" }),
+        ],
+      },
+    });
+
+    expect(await screen.findByRole("button", { name: "Upload 2 photos" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Clear the chosen photos" }));
+    expect(screen.getByRole("button", { name: "Upload 0 photos" })).toBeDisabled();
   });
 
   it("names a file that is too large", async () => {
@@ -466,6 +494,31 @@ describe("review", () => {
     expect(fake.approved.has("11")).toBe(true);
   });
 
+  it("approves every passing listing in one click", async () => {
+    const user = userEvent.setup();
+    renderAt("/review");
+
+    await user.click(await screen.findByRole("button", { name: "Approve all passing (1)" }));
+
+    expect(await screen.findByText("1 approved, 1 skipped")).toBeInTheDocument();
+    expect(fake.approved.has("11")).toBe(true);
+    expect(fake.approved.has("12")).toBe(false);
+  });
+
+  it("selects every passing listing shown, then clears the selection", async () => {
+    const user = userEvent.setup();
+    renderAt("/review");
+
+    await user.click(
+      await screen.findByRole("checkbox", { name: "Select every passing listing in the table" }),
+    );
+
+    expect(screen.getByRole("button", { name: "Approve 1 selected" })).toBeEnabled();
+    expect(screen.getByText("· 1 selected")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+    expect(screen.getByRole("button", { name: "Approve 0 selected" })).toBeDisabled();
+  });
+
   it("keeps a seller read-only", async () => {
     fake.role = "seller";
 
@@ -502,6 +555,18 @@ describe("export and channels", () => {
     renderAt("/channels");
 
     expect(await screen.findByText(/title_max_length must be positive/)).toBeInTheDocument();
+  });
+
+  it("switches to the dark theme and remembers it", async () => {
+    const user = userEvent.setup();
+    renderAt("/channels");
+
+    await user.click(await screen.findByRole("button", { name: "Use the dark theme" }));
+
+    expect(document.documentElement).toHaveClass("dark");
+    expect(localStorage.getItem("catalift.theme")).toBe("dark");
+    await user.click(screen.getByRole("button", { name: "Use the light theme" }));
+    expect(document.documentElement).not.toHaveClass("dark");
   });
 
   it("navigates between pages from the frame", async () => {

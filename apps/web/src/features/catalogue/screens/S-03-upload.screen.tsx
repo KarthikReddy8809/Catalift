@@ -43,6 +43,13 @@ export const screen: ScreenSpec = {
           attached: (summary.rowsAccepted - missingImage.length) * 2,
           unmatchedFiles: ["holiday-banner.png", "TS10-front.jpg"],
           productsMissingImage: missingImage,
+          // The first few rows of the photo-to-SKU table.
+          attachedFiles: [
+            { fileName: "KU-104_front.jpg", sku: "KU-104" },
+            { fileName: "KU-104_back.jpg", sku: "KU-104" },
+            { fileName: "KU-105-1.jpg", sku: "KU-105" },
+            { fileName: "KU-105-2.jpg", sku: "KU-105" },
+          ],
         },
       }),
     "file-too-large": () =>

@@ -17,9 +17,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/KarthikReddy8809/catalift/internal/auth"
-	"github.com/KarthikReddy8809/catalift/internal/config"
-	"github.com/KarthikReddy8809/catalift/internal/store"
+	"github.com/KarthikReddy8809/catalift/server/internal/auth"
+	"github.com/KarthikReddy8809/catalift/server/internal/config"
+	"github.com/KarthikReddy8809/catalift/server/internal/store"
 )
 
 const usage = `usage:

@@ -6,7 +6,7 @@
       "runtimeExecutable": "bash",
       "runtimeArgs": [
         "-c",
-        "trap 'kill 0' EXIT; export GOTOOLCHAIN=go1.26.8 PORT=8080 LOG_LEVEL=info SECURE_COOKIES=false DATA_DIR=data DATABASE_URL='postgres://postgres:postgres@localhost:5432/catalift-app?sslmode=disable'; go run ./cmd/worker & go run ./cmd/api"
+        "trap 'kill 0' EXIT; export GOTOOLCHAIN=go1.26.8 PORT=8080 LOG_LEVEL=info SECURE_COOKIES=false DATA_DIR=data DATABASE_URL='postgres://postgres:postgres@localhost:5432/catalift-app?sslmode=disable'; set -a; [ -f .env ] && . ./.env; set +a; cd server && { go run ./cmd/worker & go run ./cmd/api; }"
       ],
       "port": 8080
     },

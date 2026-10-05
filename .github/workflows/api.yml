@@ -14,29 +14,13 @@ name: api
 on:
   pull_request:
     paths:
-      - 'cmd/**'
-      - 'internal/**'
-      - 'db/**'
-      - 'go.mod'
-      - 'go.sum'
-      - 'tools/**'
-      - 'sqlc.yaml'
-      - 'Makefile'
-      - 'Dockerfile'
+      - 'server/**'
       - 'api/openapi.yaml'
       - '.github/workflows/api.yml'
   push:
     branches: [main]
     paths:
-      - 'cmd/**'
-      - 'internal/**'
-      - 'db/**'
-      - 'go.mod'
-      - 'go.sum'
-      - 'tools/**'
-      - 'sqlc.yaml'
-      - 'Makefile'
-      - 'Dockerfile'
+      - 'server/**'
       - 'api/openapi.yaml'
       - '.github/workflows/api.yml'
     tags: ["v*"]
@@ -48,6 +32,11 @@ concurrency:
 
 permissions:
   contents: read
+
+# The server is its own Go module under server/ (go.mod, Makefile, Dockerfile).
+defaults:
+  run:
+    working-directory: server
 
 jobs:
   validate:
@@ -90,8 +79,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: ${{ hashFiles('go.sum') != '' }}
+          go-version-file: server/go.mod
+          cache: ${{ hashFiles('server/go.sum') != '' }}
+          cache-dependency-path: server/go.sum
       - name: tools
         if: matrix.gate == 'lint'
         run: make tools
@@ -105,8 +95,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: ${{ hashFiles('go.sum') != '' }}
+          go-version-file: server/go.mod
+          cache: ${{ hashFiles('server/go.sum') != '' }}
+          cache-dependency-path: server/go.sum
       - run: make test
 
   # Needs Postgres, so it is a job here and not part of make check.
@@ -125,8 +116,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: ${{ hashFiles('go.sum') != '' }}
+          go-version-file: server/go.mod
+          cache: ${{ hashFiles('server/go.sum') != '' }}
+          cache-dependency-path: server/go.sum
       - run: make tools
       - run: make migrate
       - run: make migrate-verify
@@ -139,8 +131,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: ${{ hashFiles('go.sum') != '' }}
+          go-version-file: server/go.mod
+          cache: ${{ hashFiles('server/go.sum') != '' }}
+          cache-dependency-path: server/go.sum
       - run: make tools
       - run: make vuln
 
@@ -169,7 +162,7 @@ jobs:
           echo "tags=$tags" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
-          context: .
+          context: server
           push: ${{ github.event_name == 'push' }}
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha

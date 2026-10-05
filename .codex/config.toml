@@ -1,0 +1,9 @@
+sandbox_mode = "workspace-write"
+
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+TZ = "UTC"
+FORCE_COLOR = "1"
+DO_NOT_TRACK = "1"
