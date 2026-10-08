@@ -32,17 +32,17 @@ var Fields = []string{"title", "bullet_1", "bullet_2", "bullet_3", "bullet_4", "
 
 // Service runs listing operations over the database and the loaded channels.
 type Service struct {
-	pool     *pgxpool.Pool
-	channels channels.Set
+	pool  *pgxpool.Pool
+	rules *channels.Registry
 }
 
 // NewService builds the service.
-func NewService(pool *pgxpool.Pool, set channels.Set) *Service {
-	return &Service{pool: pool, channels: set}
+func NewService(pool *pgxpool.Pool, rules *channels.Registry) *Service {
+	return &Service{pool: pool, rules: rules}
 }
 
 // Channels returns the loaded channel set.
-func (s *Service) Channels() channels.Set { return s.channels }
+func (s *Service) Channels() channels.Set { return s.rules.Current() }
 
 func txt(t pgtype.Text) string { return t.String }
 
@@ -71,11 +71,16 @@ func Revalidate(ctx context.Context, q *store.Queries, set channels.Set, listing
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return "", nil, fmt.Errorf("load attributes: %w", err)
 	}
+	avoid, err := q.AvoidWordsForProduct(ctx, l.ProductID)
+	if err != nil {
+		return "", nil, fmt.Errorf("load brand words to avoid: %w", err)
+	}
 	failures := channels.Validate(ch, channels.Listing{
 		Title:       txt(l.Title),
 		Bullets:     [5]string{txt(l.Bullet1), txt(l.Bullet2), txt(l.Bullet3), txt(l.Bullet4), txt(l.Bullet5)},
 		Description: txt(l.Description),
 		Attributes:  attrs,
+		AvoidWords:  avoid,
 	})
 	if err := q.DeleteRuleResults(ctx, listingID); err != nil {
 		return "", nil, fmt.Errorf("clear rule results: %w", err)
@@ -143,7 +148,7 @@ func (s *Service) UpdateText(ctx context.Context, listingID int64, e Edit) error
 		if err != nil {
 			return fmt.Errorf("update listing: %w", err)
 		}
-		_, _, err = Revalidate(ctx, q, s.channels, listingID)
+		_, _, err = Revalidate(ctx, q, s.rules.Current(), listingID)
 		return err
 	})
 }
@@ -200,7 +205,7 @@ func (s *Service) CorrectAttributes(ctx context.Context, productID, userID int64
 			return fmt.Errorf("bump listings: %w", err)
 		}
 		for _, id := range ids {
-			if _, _, err := Revalidate(ctx, q, s.channels, id); err != nil {
+			if _, _, err := Revalidate(ctx, q, s.rules.Current(), id); err != nil {
 				return err
 			}
 		}
@@ -316,12 +321,57 @@ func (s *Service) RequestRegeneration(ctx context.Context, listingID, userID int
 // new version, which clears its approval. One config_rechecks row per
 // channel records the counts the grid shows.
 func (s *Service) Recheck(ctx context.Context) error {
+	_, err := s.recheck(ctx)
+	return err
+}
+
+// RecheckCounts is what one channel's re-check did.
+type RecheckCounts struct {
+	Rechecked, ApprovalsCleared int
+}
+
+// RecheckBrand re-checks every generated listing of a brand's products after
+// its words to avoid changed. As with a channel change, an approved listing
+// that now fails gets a new version, which clears its approval.
+func (s *Service) RecheckBrand(ctx context.Context, brandID int64) (RecheckCounts, error) {
+	ids, err := store.New(s.pool).GeneratedListingsOfBrand(ctx, brandID)
+	if err != nil {
+		return RecheckCounts{}, fmt.Errorf("listings of brand %d: %w", brandID, err)
+	}
+	set := s.rules.Current()
+	out := RecheckCounts{Rechecked: len(ids)}
+	for _, id := range ids {
+		err := InTx(ctx, s.pool, func(tq *store.Queries) error {
+			wasApproved, err := tq.IsApprovedNow(ctx, id)
+			if err != nil {
+				return fmt.Errorf("approval of %d: %w", id, err)
+			}
+			status, _, err := Revalidate(ctx, tq, set, id)
+			if err != nil {
+				return err
+			}
+			if wasApproved && status == store.RuleStatusFailing {
+				out.ApprovalsCleared++
+				return tq.BumpListing(ctx, id)
+			}
+			return nil
+		})
+		if err != nil {
+			return RecheckCounts{}, err
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) recheck(ctx context.Context) (map[string]RecheckCounts, error) {
+	out := map[string]RecheckCounts{}
 	q := store.New(s.pool)
-	for i := range s.channels.Channels {
-		ch := &s.channels.Channels[i]
+	set := s.rules.Current()
+	for i := range set.Channels {
+		ch := &set.Channels[i]
 		ids, err := q.ListingsForRecheck(ctx, store.ListingsForRecheckParams{Channel: ch.ID, ConfigHash: ch.Hash})
 		if err != nil {
-			return fmt.Errorf("list listings for %s: %w", ch.ID, err)
+			return nil, fmt.Errorf("list listings for %s: %w", ch.ID, err)
 		}
 		if len(ids) == 0 {
 			continue
@@ -333,7 +383,7 @@ func (s *Service) Recheck(ctx context.Context) error {
 				if err != nil {
 					return fmt.Errorf("approval of %d: %w", id, err)
 				}
-				status, _, err := Revalidate(ctx, tq, s.channels, id)
+				status, _, err := Revalidate(ctx, tq, set, id)
 				if err != nil {
 					return err
 				}
@@ -344,14 +394,15 @@ func (s *Service) Recheck(ctx context.Context) error {
 				return nil
 			})
 			if err != nil {
-				return err
+				return nil, err
 			}
 		}
+		out[ch.ID] = RecheckCounts{Rechecked: len(ids), ApprovalsCleared: cleared}
 		if err := q.InsertConfigRecheck(ctx, store.InsertConfigRecheckParams{
 			Channel: ch.ID, ConfigHash: ch.Hash, ListingsRechecked: int32(len(ids)), ApprovalsCleared: int32(cleared), //nolint:gosec // US-00-004: counts are bounded by the table size.
 		}); err != nil {
-			return fmt.Errorf("record recheck for %s: %w", ch.ID, err)
+			return nil, fmt.Errorf("record recheck for %s: %w", ch.ID, err)
 		}
 	}
-	return nil
+	return out, nil
 }

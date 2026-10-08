@@ -2,6 +2,7 @@ import type { ScreenSpec } from "@/design/screen";
 import { AppFrame } from "@/features/shell/components/AppFrame";
 import { budgetBlocked, budgetOk, seller } from "@/features/shell/fixtures";
 
+import { ProductFixDrawer } from "../components/ProductFixDrawer";
 import {
   ProductsView,
   type ProductRow,
@@ -15,14 +16,18 @@ const DETECT = 4_200;
 const LISTING = 5_000;
 const REGEN = 1_100;
 
-const done = (sku: string, priceMinor: number, attributes: string, extra = 0): ProductRow => ({
+const NAMES = ["Colour", "Pattern", "Sleeve", "Neckline", "Fit"];
+
+/** done: a detected product; attributes are given in NAMES order. */
+const done = (sku: string, priceMinor: number, read: string, extra = 0): ProductRow => ({
+  id: sku.slice(3),
   sku,
   brand: "Indigo Loom",
   category: "kurta",
   priceMinor,
   imageCount: 2,
   detection: "done",
-  attributes,
+  attributes: read.split(", ").map((value, i) => ({ name: NAMES[i] ?? "", value })),
   aiCostMicroUsd: DETECT + 2 * LISTING + extra,
 });
 
@@ -103,5 +108,22 @@ export const screen: ScreenSpec = {
         budgetBlocked,
       ),
     error: () => framed({ status: "error", requestId: "req_01J9Z6" }),
+    // A product without a photo opened from its Fix button.
+    "fix-drawer": () => (
+      <>
+        {framed({ status: "ready", products })}
+        <ProductFixDrawer
+          target={{
+            key: "product:210",
+            title: "KU-210",
+            problem: "No photo yet, so the AI cannot read this product.",
+            values: { sku: "KU-210", category: "kurta", brand: "Indigo Loom", price: "1299" },
+            photoCount: 0,
+          }}
+          categories={["kurta", "kurti", "saree", "lehenga", "salwar suit", "sherwani", "dupatta"]}
+          onClose={() => undefined}
+        />
+      </>
+    ),
   },
 };

@@ -1,0 +1,8 @@
+[Unit]
+Description=Catalift nightly database dump to Cloud Storage
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/catalift/backup.sh

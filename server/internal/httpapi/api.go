@@ -35,7 +35,7 @@ type Deps struct {
 	Generation    *generation.Service
 	Listings      *listings.Service
 	Exports       *exports.Service
-	Channels      channels.Set
+	Channels      *channels.Registry
 	SecureCookies bool
 }
 
@@ -50,6 +50,9 @@ type access int
 const (
 	anyRole access = iota
 	reviewerOnly
+	// sellerOnly: bringing products in is the seller's job; reviewers work on
+	// what is already there (seller flow step 1).
+	sellerOnly
 )
 
 // authed is a handler that runs with a signed-in principal.
@@ -64,12 +67,21 @@ func (a *api) routes(mux *http.ServeMux) {
 	mux.Handle("DELETE /v1/sessions/current", a.guard(anyRole, true, false, a.deleteSession))
 
 	mux.Handle("GET /v1/brands", a.guard(anyRole, false, false, a.listBrands))
-	mux.Handle("PATCH /v1/brands/{brand_id}", a.guard(anyRole, true, false, a.updateBrand))
-	mux.Handle("POST /v1/uploads", a.guard(anyRole, true, true, a.createUpload))
+	mux.Handle("PATCH /v1/brands/{brand_id}", a.guard(sellerOnly, true, false, a.updateBrand))
+	mux.Handle("POST /v1/uploads", a.guard(sellerOnly, true, true, a.createUpload))
+	mux.Handle("GET /v1/uploads/latest", a.guard(anyRole, false, false, a.getLatestUpload))
 	mux.Handle("GET /v1/uploads/{upload_id}", a.guard(anyRole, false, false, a.getUpload))
-	mux.Handle("POST /v1/uploads/{upload_id}/images", a.guard(anyRole, true, true, a.createImages))
+	mux.Handle("POST /v1/uploads/{upload_id}/images", a.guard(sellerOnly, true, true, a.createImages))
 	mux.Handle("GET /v1/products", a.guard(anyRole, false, false, a.listProducts))
 	mux.Handle("GET /v1/products/{product_id}", a.guard(anyRole, false, false, a.getProduct))
+	mux.Handle("GET /v1/products/{product_id}/image", a.guard(anyRole, false, false, a.getProductImage))
+	mux.Handle("POST /v1/products/{product_id}/images", a.guard(sellerOnly, true, true, a.createProductImages))
+	mux.Handle("PATCH /v1/products/{product_id}", a.guard(sellerOnly, true, false, a.updateProduct))
+	mux.Handle("POST /v1/products/{product_id}/enrich", a.guard(sellerOnly, true, true, a.enrichProduct))
+	mux.Handle("GET /v1/row-errors", a.guard(anyRole, false, false, a.listRowErrors))
+	mux.Handle("PUT /v1/uploads/{upload_id}/rows/{row_number}", a.guard(sellerOnly, true, false, a.updateRow))
+	mux.Handle("DELETE /v1/uploads/{upload_id}/rows/{row_number}", a.guard(sellerOnly, true, false, a.discardRow))
+	mux.Handle("DELETE /v1/row-errors", a.guard(sellerOnly, true, false, a.discardRows))
 	mux.Handle("PATCH /v1/products/{product_id}/attributes", a.guard(reviewerOnly, true, false, a.updateAttributes))
 
 	mux.Handle("POST /v1/generation-runs", a.guard(anyRole, true, true, a.createRun))
@@ -82,11 +94,16 @@ func (a *api) routes(mux *http.ServeMux) {
 	mux.Handle("GET /v1/listings/{listing_id}/regeneration-requests", a.guard(anyRole, false, false, a.listRegenerations))
 	mux.Handle("POST /v1/listings/{listing_id}/regeneration-requests", a.guard(reviewerOnly, true, true, a.createRegeneration))
 	mux.Handle("POST /v1/approvals", a.guard(reviewerOnly, true, true, a.createApprovals))
+	mux.Handle("POST /v1/rule-checks", a.guard(reviewerOnly, true, false, a.createRuleCheck))
 
 	mux.Handle("GET /v1/channels", a.guard(anyRole, false, false, a.listChannels))
+	mux.Handle("PATCH /v1/channels/{channel}", a.guard(reviewerOnly, true, false, a.updateChannelRules))
 	mux.Handle("POST /v1/exports", a.guard(reviewerOnly, true, true, a.createExport))
-	mux.Handle("GET /v1/exports/{export_id}", a.guard(reviewerOnly, false, false, a.getExport))
-	mux.Handle("GET /v1/exports/{export_id}/files/{channel}", a.guard(reviewerOnly, false, false, a.getExportFile))
+	// A seller sees and downloads only exports a reviewer sent them (ADR-0012).
+	mux.Handle("GET /v1/exports", a.guard(anyRole, false, false, a.listExports))
+	mux.Handle("GET /v1/exports/{export_id}", a.guard(anyRole, false, false, a.getExport))
+	mux.Handle("POST /v1/exports/{export_id}/send", a.guard(reviewerOnly, true, false, a.sendExport))
+	mux.Handle("GET /v1/exports/{export_id}/files/{channel}", a.guard(anyRole, false, false, a.getExportFile))
 	mux.Handle("GET /v1/budget", a.guard(anyRole, false, false, a.getBudget))
 }
 
@@ -115,6 +132,10 @@ func (a *api) guard(acc access, write, idem bool, h authed) http.Handler {
 		}
 		if acc == reviewerOnly && p.Role != auth.RoleReviewer {
 			apiError(w, r, http.StatusForbidden, "forbidden_role", "Only reviewers can do this.")
+			return
+		}
+		if acc == sellerOnly && p.Role != auth.RoleSeller {
+			apiError(w, r, http.StatusForbidden, "forbidden_role", "Only sellers can do this.")
 			return
 		}
 		if idem {

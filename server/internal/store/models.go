@@ -477,6 +477,8 @@ type Brand struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	// Last change to this row, set by the repository on every update.
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+	// Words or phrases the brand never uses; checked on every listing of its products.
+	WordsToAvoid []string `json:"words_to_avoid"`
 }
 
 // The single row holding the AI spend limit and blocked state. Serves US-00-012.
@@ -491,6 +493,23 @@ type Budget struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	// Last change to this row, set by the repository on every update.
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+// Reviewer edits to channel rules; the latest per channel is in force.
+type ChannelRuleEdit struct {
+	ID int64 `json:"id"`
+	// Channel id from the channel file.
+	Channel string `json:"channel"`
+	// Longest title allowed, in characters.
+	TitleMaxLength int32 `json:"title_max_length"`
+	// Attributes a listing must have a known value for.
+	RequiredAttributes []string `json:"required_attributes"`
+	// Words and phrases the rules engine refuses, lowercase.
+	BannedWords []string `json:"banned_words"`
+	// The reviewer who saved the edit.
+	EditedBy int64 `json:"edited_by"`
+	// When the edit was saved.
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 // One start-up re-check after a channel rule change. Serves US-00-004, US-00-005.
@@ -517,6 +536,12 @@ type Export struct {
 	CreatedBy int64 `json:"created_by"`
 	// When the row was written.
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	// When a reviewer sent the export to the seller; null until sent.
+	SentAt pgtype.Timestamptz `json:"sent_at"`
+	// The reviewer who sent it; null until sent.
+	SentBy pgtype.Int8 `json:"sent_by"`
+	// The upload whose approved listings the export holds; null for older exports that held every upload.
+	UploadID pgtype.Int8 `json:"upload_id"`
 }
 
 // One channel's CSV within an export. Serves US-00-010.
@@ -681,6 +706,8 @@ type ProductAttribute struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	// Last change to this row, set by the repository on every update.
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+	// The model's confidence in the detected attributes, 0 to 1; null when not detected by enrich-v1 or corrected by a reviewer.
+	DetectionConfidence pgtype.Float4 `json:"detection_confidence"`
 }
 
 // A photo attached to a product, with its detection copy. Serves US-00-001, US-00-002.
@@ -800,6 +827,12 @@ type UploadRowError struct {
 	Reason string `json:"reason"`
 	// When the row was written.
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	// The category as typed in the CSV.
+	RawCategory pgtype.Text `json:"raw_category"`
+	// The brand as typed in the CSV.
+	RawBrand pgtype.Text `json:"raw_brand"`
+	// The price as typed in the CSV.
+	RawPrice pgtype.Text `json:"raw_price"`
 }
 
 // A seeded person who signs in as a seller or a reviewer. Serves ADR-0006, US-00-009, US-00-010.

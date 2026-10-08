@@ -1,40 +1,37 @@
-import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { sessionQueryOptions } from "@/features/auth/api";
+import { useCurrentUpload } from "@/features/catalogue/current";
 import { channelsQueryOptions } from "@/features/channels/api";
 import { ApiError, errorBody } from "@/lib/api";
 
-import { createExport, downloadHref } from "../api";
+import { createExport, downloadHref, exportKeys, exportsQueryOptions, sendExport } from "../api";
 import { ExportView, type ExportViewProps } from "../components/ExportView";
+import { toListItem } from "../items";
 
-/** ExportPage: readiness per channel, then one CSV per channel (US-00-010). */
+/**
+ * ExportPage (reviewers): readiness per channel, one CSV per channel
+ * (US-00-010), then Send to seller for each export (ADR-0012).
+ */
 export function ExportPage() {
   const queryClient = useQueryClient();
-  const { data: session } = useSuspenseQuery(sessionQueryOptions());
-  const channels = useQuery(channelsQueryOptions());
+  // Readiness, the export and the send list cover the newest upload only.
+  const current = useCurrentUpload();
+  const channels = useQuery({ ...channelsQueryOptions(current.id), enabled: current.ready });
+  const history = useQuery({ ...exportsQueryOptions(current.id), enabled: current.ready });
   const run = useMutation({
-    mutationFn: createExport,
-    onSettled: () => void queryClient.invalidateQueries({ queryKey: ["channels"] }),
+    mutationFn: () => createExport(current.id),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["channels"] });
+      void queryClient.invalidateQueries({ queryKey: exportKeys.all });
+    },
+  });
+  const send = useMutation({
+    mutationFn: sendExport,
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: exportKeys.all }),
   });
 
-  if (session?.user.role !== "reviewer") {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-2xl font-semibold tracking-tight">Export</h1>
-        <Alert role="alert">
-          <AlertTitle>Export is for reviewers</AlertTitle>
-          <AlertDescription>
-            Listings leave Catalift only after a reviewer approves them. Ask a reviewer to export,
-            or carry on in Products.
-          </AlertDescription>
-        </Alert>
-      </div>
-    );
-  }
-
   const list = (channels.data ?? []).filter((c) => c.enabled);
-  const nameOf = (id: string) => list.find((c) => c.id === id)?.name ?? id;
+  const nameOf = (id: string) => (channels.data ?? []).find((c) => c.id === id)?.name ?? id;
   const err = run.error ?? channels.error;
   let status: ExportViewProps["status"] = "ready";
   if (run.isPending) status = "exporting";
@@ -53,7 +50,18 @@ export function ExportPage() {
     onExport: () => {
       run.mutate();
     },
+    history: (history.data ?? []).map((e) => toListItem(e, nameOf)),
+    onSend: (id) => {
+      send.mutate(id);
+    },
+    sendingId: send.isPending ? send.variables : undefined,
   };
+  if (send.error) {
+    const body = errorBody(send.error);
+    props.sendError = body?.message
+      ? `${body.message}${body.requestId ? ` (request ${body.requestId})` : ""}`
+      : "Try again.";
+  }
   if (run.data) {
     props.files = run.data.files.map((f) => ({
       channel: f.channel,

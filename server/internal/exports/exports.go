@@ -45,23 +45,34 @@ type Export struct {
 	CreatedAt time.Time
 	Files     []File
 	Skipped   []Skip
+	// SentAt and SentBy are set once a reviewer sends the export to the
+	// seller; SentAt is zero until then.
+	SentAt time.Time
+	SentBy string
 }
+
+// Sent reports whether a reviewer sent the export to the seller.
+func (e *Export) Sent() bool { return !e.SentAt.IsZero() }
 
 // Service writes and reads exports.
 type Service struct {
-	pool     *pgxpool.Pool
-	channels channels.Set
-	dataDir  string
+	pool    *pgxpool.Pool
+	rules   *channels.Registry
+	dataDir string
 }
 
 // NewService builds the service; files go under dataDir/exports.
-func NewService(pool *pgxpool.Pool, set channels.Set, dataDir string) *Service {
-	return &Service{pool: pool, channels: set, dataDir: dataDir}
+func NewService(pool *pgxpool.Pool, rules *channels.Registry, dataDir string) *Service {
+	return &Service{pool: pool, rules: rules, dataDir: dataDir}
 }
 
+// upload is the optional upload filter; 0 means every upload.
+func upload(id int64) pgtype.Int8 { return pgtype.Int8{Int64: id, Valid: id != 0} }
+
 // Create writes a CSV for every enabled channel with at least one approved
-// listing. Columns and headers come from the channel file (REQ-017).
-func (s *Service) Create(ctx context.Context, userID int64) (Export, error) {
+// listing of the upload (0: every upload). Columns and headers come from the
+// channel file (REQ-017).
+func (s *Service) Create(ctx context.Context, userID, uploadID int64) (Export, error) {
 	q := store.New(s.pool)
 	type pending struct {
 		ch   channels.Channel
@@ -69,8 +80,8 @@ func (s *Service) Create(ctx context.Context, userID int64) (Export, error) {
 	}
 	var work []pending
 	var skipped []Skip
-	for _, ch := range s.channels.Channels { //nolint:gocritic // US-00-010: two channels; the copy is cheap and kept for readability.
-		rows, err := q.ApprovedForChannel(ctx, ch.ID)
+	for _, ch := range s.rules.Current().Channels { //nolint:gocritic // US-00-010: two channels; the copy is cheap and kept for readability.
+		rows, err := q.ApprovedForChannel(ctx, store.ApprovedForChannelParams{Channel: ch.ID, UploadID: upload(uploadID)})
 		if err != nil {
 			return Export{}, fmt.Errorf("approved for %s: %w", ch.ID, err)
 		}
@@ -90,7 +101,7 @@ func (s *Service) Create(ctx context.Context, userID int64) (Export, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // a no-op after Commit
 	tq := store.New(tx)
-	e, err := tq.CreateExport(ctx, userID)
+	e, err := tq.CreateExport(ctx, store.CreateExportParams{CreatedBy: userID, UploadID: upload(uploadID)})
 	if err != nil {
 		return Export{}, fmt.Errorf("create export: %w", err)
 	}
@@ -117,29 +128,76 @@ func (s *Service) Create(ctx context.Context, userID int64) (Export, error) {
 	return out, nil
 }
 
-// Get reads an export and its files.
-func (s *Service) Get(ctx context.Context, id int64) (Export, error) {
+// Get reads an export and its files. With sentOnly (a seller asking), an
+// export not yet sent is reported as not found, so its existence stays private.
+func (s *Service) Get(ctx context.Context, id int64, sentOnly bool) (Export, error) {
 	q := store.New(s.pool)
 	e, err := q.GetExport(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Export{}, ErrNotFound
 	}
 	if err != nil {
-		return Export{}, fmt.Errorf("load export: %w", err)
+		return Export{}, fmt.Errorf("load export %d: %w", id, err)
 	}
-	files, err := q.ListExportFiles(ctx, id)
-	if err != nil {
-		return Export{}, fmt.Errorf("export files: %w", err)
+	out := Export{ID: e.ID, CreatedAt: e.CreatedAt.Time, SentAt: e.SentAt.Time, SentBy: e.SentByEmail.String}
+	if sentOnly && !out.Sent() {
+		return Export{}, ErrNotFound
 	}
-	out := Export{ID: e.ID, CreatedAt: e.CreatedAt.Time}
-	for _, f := range files {
-		out.Files = append(out.Files, File{Channel: f.Channel, RowCount: f.RowCount})
+	if out.Files, err = s.files(ctx, q, id); err != nil {
+		return Export{}, err
 	}
 	return out, nil
 }
 
-// Open returns one channel's CSV of an export; the caller closes it.
-func (s *Service) Open(ctx context.Context, id int64, channel string) (io.ReadCloser, error) {
+func (s *Service) files(ctx context.Context, q *store.Queries, id int64) ([]File, error) {
+	rows, err := q.ListExportFiles(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("files of export %d: %w", id, err)
+	}
+	out := []File{}
+	for _, f := range rows {
+		out = append(out, File{Channel: f.Channel, RowCount: f.RowCount})
+	}
+	return out, nil
+}
+
+// Send hands an export to the seller: its files appear in the seller's
+// received exports. Sending again changes nothing.
+func (s *Service) Send(ctx context.Context, id, userID int64) (Export, error) {
+	if _, err := store.New(s.pool).SendExport(ctx, store.SendExportParams{ID: id, SentBy: pgtype.Int8{Int64: userID, Valid: true}}); err != nil {
+		return Export{}, fmt.Errorf("send export %d: %w", id, err)
+	}
+	return s.Get(ctx, id, false)
+}
+
+// List returns exports newest first, beforeID 0 for the first page; with
+// sentOnly, only those a reviewer sent to the seller; with uploadID, only
+// that upload's.
+func (s *Service) List(ctx context.Context, sentOnly bool, uploadID, beforeID int64, limit int32) ([]Export, error) {
+	q := store.New(s.pool)
+	rows, err := q.ListExports(ctx, store.ListExportsParams{SentOnly: sentOnly, UploadID: upload(uploadID), BeforeID: beforeID, PageSize: limit})
+	if err != nil {
+		return nil, fmt.Errorf("list exports: %w", err)
+	}
+	out := make([]Export, 0, len(rows))
+	for _, e := range rows {
+		x := Export{ID: e.ID, CreatedAt: e.CreatedAt.Time, SentAt: e.SentAt.Time, SentBy: e.SentByEmail.String}
+		if x.Files, err = s.files(ctx, q, e.ID); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, nil
+}
+
+// Open returns one channel's CSV of an export; the caller closes it. With
+// sentOnly, a file of an export not yet sent is not found.
+func (s *Service) Open(ctx context.Context, id int64, channel string, sentOnly bool) (io.ReadCloser, error) {
+	if sentOnly {
+		if _, err := s.Get(ctx, id, true); err != nil {
+			return nil, err
+		}
+	}
 	path, err := store.New(s.pool).GetExportFile(ctx, store.GetExportFileParams{ExportID: id, Channel: channel})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -231,9 +289,10 @@ func EscapeCell(v string) string {
 	return v
 }
 
-// Readiness counts approved and total listings per channel (S-06).
-func (s *Service) Readiness(ctx context.Context) ([]store.ApprovalCountsRow, error) {
-	rows, err := store.New(s.pool).ApprovalCounts(ctx)
+// Readiness counts approved and total listings per channel (S-06), for one
+// upload or, with 0, every upload.
+func (s *Service) Readiness(ctx context.Context, uploadID int64) ([]store.ApprovalCountsRow, error) {
+	rows, err := store.New(s.pool).ApprovalCounts(ctx, upload(uploadID))
 	if err != nil {
 		return nil, fmt.Errorf("approval counts: %w", err)
 	}

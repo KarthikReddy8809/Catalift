@@ -53,7 +53,8 @@ func (a *api) fail(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, ai.ErrBudgetBlocked):
 		apiError(w, r, http.StatusUnprocessableEntity, "budget_blocked", "AI work is stopped because the budget is used up. The owner must clear the block.")
 	case errors.Is(err, listings.ErrNotFound), errors.Is(err, catalogue.ErrUploadNotFound), errors.Is(err, catalogue.ErrBrandNotFound),
-		errors.Is(err, catalogue.ErrProductNotFound), errors.Is(err, generation.ErrRunNotFound), errors.Is(err, exports.ErrNotFound):
+		errors.Is(err, catalogue.ErrProductNotFound), errors.Is(err, generation.ErrRunNotFound), errors.Is(err, exports.ErrNotFound),
+		errors.Is(err, catalogue.ErrNoUpload):
 		apiError(w, r, http.StatusNotFound, "not_found", "No such record.")
 	case errors.Is(err, listings.ErrVersionConflict):
 		apiError(w, r, http.StatusConflict, "version_conflict", "It changed since you loaded it. Reload and try again.")
@@ -85,6 +86,20 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 		return false
 	}
 	return true
+}
+
+// uploadFilter reads the optional filter[upload_id]; 0 means every upload.
+func uploadFilter(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	v := r.URL.Query().Get("filter[upload_id]")
+	if v == "" {
+		return 0, true
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		badRequest(w, r, "filter[upload_id]", "must be a positive integer")
+		return 0, false
+	}
+	return n, true
 }
 
 func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {

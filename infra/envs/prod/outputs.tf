@@ -29,3 +29,38 @@ output "data_bucket" {
   description = "Name of the prod data bucket (versioned, deletion-protected)."
   value       = google_storage_bucket.data.name
 }
+
+output "registry_url" {
+  description = "Image prefix CI pushes to: <registry_url>/server:<tag> and <registry_url>/migrate:<tag>."
+  value       = module.registry.url
+}
+
+output "vm_name" {
+  description = "Catalift VM, for gcloud compute ssh --tunnel-through-iap."
+  value       = module.app_host.name
+}
+
+output "vm_zone" {
+  description = "Zone of the Catalift VM."
+  value       = module.app_host.zone
+}
+
+output "vm_ip" {
+  description = "Static IP of the Catalift VM; a custom domain's A record points here."
+  value       = module.app_host.ip_address
+}
+
+output "site_url" {
+  description = "Where Catalift is served."
+  value       = "https://${module.app_host.site_address}"
+}
+
+output "web_bucket" {
+  description = "Bucket CI uploads web/<tag>.tar.gz to."
+  value       = google_storage_bucket.web.name
+}
+
+output "dump_bucket" {
+  description = "Bucket the nightly database dumps go to."
+  value       = google_storage_bucket.dumps.name
+}

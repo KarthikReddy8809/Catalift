@@ -69,6 +69,13 @@ func (a *api) listListings(w http.ResponseWriter, r *http.Request, _ auth.Princi
 		}
 		params.Approved = pgtype.Bool{Bool: b, Valid: true}
 	}
+	uploadID, ok := uploadFilter(w, r)
+	if !ok {
+		return
+	}
+	if uploadID != 0 {
+		params.UploadID = pgtype.Int8{Int64: uploadID, Valid: true}
+	}
 	rows, err := a.Listings.Grid(r.Context(), params)
 	if err != nil {
 		a.fail(w, r, err)
@@ -339,4 +346,44 @@ func (a *api) createApprovals(w http.ResponseWriter, r *http.Request, p auth.Pri
 	}
 	a.log.InfoContext(r.Context(), "approvals", "user_id", p.UserID, "approved", len(ok), "skipped", len(skipped))
 	WriteJSON(w, http.StatusCreated, map[string]any{"approved": approved, "skipped": skip})
+}
+
+// createRuleCheck runs a listing's channel rules on draft text without saving
+// it, so the editor's badge updates as the reviewer types. It changes nothing,
+// so it needs no Idempotency-Key.
+func (a *api) createRuleCheck(w http.ResponseWriter, r *http.Request, _ auth.Principal) {
+	var in struct {
+		ListingID string `json:"listing_id"`
+		listingUpdate
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	id, err := strconv.ParseInt(in.ListingID, 10, 64)
+	if err != nil || id <= 0 {
+		badRequest(w, r, "listing_id", "must be a positive integer")
+		return
+	}
+	in.Version = 1 // validate() needs a version; a check is not tied to one
+	if field, reason := in.validate(); field != "" && field != "body" {
+		badRequest(w, r, field, reason)
+		return
+	}
+	fails, err := a.Listings.CheckDraft(r.Context(), id, listings.Edit{
+		Title: in.Title, Description: in.Description,
+		Bullets: [5]*string{in.Bullet1, in.Bullet2, in.Bullet3, in.Bullet4, in.Bullet5},
+	})
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	out := make([]map[string]string, len(fails))
+	for i, f := range fails {
+		out[i] = map[string]string{"rule": f.Rule, "field": f.Field, "message": f.Message}
+	}
+	status := "passing"
+	if len(fails) > 0 {
+		status = "failing"
+	}
+	WriteJSON(w, http.StatusOK, map[string]any{"rule_status": status, "rule_failures": out})
 }

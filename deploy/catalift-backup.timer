@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Catalift database dump every night
+
+[Timer]
+# 21:30 UTC is 03:00 IST, the quietest hour for a team in India.
+OnCalendar=*-*-* 21:30:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

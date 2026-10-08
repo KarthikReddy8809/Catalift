@@ -1,5 +1,5 @@
-import { CheckCheck } from "lucide-react";
-import { useState } from "react";
+import { CheckCheck, ImageOff } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -26,7 +27,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import type { Role } from "@/features/shell/components/AppFrame";
-import { cn } from "@/lib/utils";
+import { formatUsdMicro } from "@/features/shell/format";
 
 export type RuleStatus = "unchecked" | "passing" | "failing";
 
@@ -38,17 +39,24 @@ export interface RuleFailure {
 
 export interface GridRow {
   id: string;
+  /** The product this channel listing belongs to; rows are grouped by it. */
+  productId?: string | undefined;
   sku: string;
   channel: string;
   version: number;
   title: string;
   bullets: [string, string, string, string, string];
   description: string;
-  /**
-   * Assumption: the API's Listing schema has no attributes (raised as a gap);
-   * the design shows them as if GET /v1/listings returned them.
-   */
+  /** The product's attributes as one line, e.g. "navy, solid, round neck". */
   attributes: string;
+  /** True when a detected attribute is missing or "unknown" (reviewer triage). */
+  missingAttributes?: boolean | undefined;
+  /** The model's 0 to 1 confidence in the attributes; absent once corrected. */
+  confidence?: number | null | undefined;
+  /** The product's thumbnail (GET /v1/products/{id}/image). */
+  imageUrl?: string | undefined;
+  /** The product's AI cost so far, millionths of a US dollar. */
+  costMicroUsd?: number | undefined;
   ruleStatus: RuleStatus;
   ruleFailures: RuleFailure[];
   approved: boolean;
@@ -62,17 +70,32 @@ export interface ApproveResult {
   skipped: { sku: string; channel: string; reason: "failing_rules" | "version_changed" }[];
 }
 
+/** Triage filters (reviewer flow step 2). */
+export type GridFilter = "all" | "failing" | "missing" | "low_confidence" | "unapproved";
+
+/** Below this confidence a detection is flagged for a closer look. */
+export const LOW_CONFIDENCE = 0.6;
+
+/** The rules engine's verdict on the editor's current draft. */
+export interface LiveCheck {
+  listingId: string;
+  ruleStatus: "passing" | "failing";
+  ruleFailures: RuleFailure[];
+}
+
 export interface ReviewGridViewProps {
   status: "loading" | "ready" | "error";
   role: Role;
   rows?: GridRow[];
-  filter?: "all" | "failing" | "unapproved";
+  filter?: GridFilter;
   selectedIds?: string[];
   editingId?: string | undefined;
   conflict?: boolean;
   approveResult?: ApproveResult | undefined;
   clearedByRecheck?: { channel: string; count: number } | undefined;
   requestId?: string;
+  /** The rules' verdict on the draft being typed, for the open listing. */
+  liveCheck?: LiveCheck | undefined;
   /** Interaction, wired by the route; absent in the design gallery. */
   actions?: ReviewGridActions | undefined;
 }
@@ -84,7 +107,9 @@ export type ListingField =
 export type ListingChanges = Partial<Record<ListingField, string>>;
 
 export interface ReviewGridActions {
-  onFilterChange: (filter: "all" | "failing" | "unapproved") => void;
+  onFilterChange: (filter: GridFilter) => void;
+  /** The editor's draft changed; the route re-runs the rules on it. */
+  onDraft?: ((row: GridRow, changes: ListingChanges) => void) | undefined;
   onToggleSelect: (id: string, selected: boolean) => void;
   /** Selects or clears several rows at once (the select-all checkbox). */
   onSelectMany: (ids: string[], selected: boolean) => void;
@@ -174,19 +199,40 @@ function Editor({
   role,
   conflict,
   actions,
+  liveCheck,
 }: {
   row: GridRow;
   role: Role;
   conflict: boolean;
   actions?: ReviewGridActions | undefined;
+  liveCheck?: LiveCheck | undefined;
 }) {
   const canEdit = role === "reviewer";
   const [field, setField] = useState<ListingField>("title");
   const [instruction, setInstruction] = useState("");
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(
+    () => () => {
+      clearTimeout(timer.current);
+    },
+    [],
+  );
+  // The badge follows the draft once the rules have run on it.
+  const live = liveCheck?.listingId === row.id ? liveCheck : undefined;
+  const failures = live ? live.ruleFailures : row.ruleFailures;
+  const verdict: GridRow["ruleStatus"] = live ? live.ruleStatus : row.ruleStatus;
   return (
     <form
       aria-labelledby="editor"
-      className="space-y-4 rounded-xl border bg-card p-5 shadow-sm lg:sticky lg:top-24 lg:max-h-[calc(100svh-7rem)] lg:overflow-y-auto"
+      className="space-y-4 p-5"
+      onChange={(e) => {
+        if (!canEdit || !actions?.onDraft) return;
+        const form = e.currentTarget;
+        clearTimeout(timer.current);
+        timer.current = setTimeout(() => {
+          actions.onDraft?.(row, changesFrom(row, new FormData(form)));
+        }, 400);
+      }}
       onSubmit={(e) => {
         e.preventDefault();
         const changes = changesFrom(row, new FormData(e.currentTarget));
@@ -205,6 +251,10 @@ function Editor({
         <p className="text-sm text-muted-foreground">
           Version {row.version} &middot; {row.attributes}
         </p>
+        <p className="flex items-center gap-2 text-sm" role="status" aria-live="polite">
+          <RuleBadge row={{ ...row, ruleStatus: verdict, ruleFailures: failures }} />
+          {live ? <span className="text-muted-foreground">for your unsaved changes</span> : null}
+        </p>
       </header>
 
       {conflict ? (
@@ -222,9 +272,9 @@ function Editor({
         </Alert>
       ) : null}
 
-      {row.ruleFailures.length > 0 ? (
+      {failures.length > 0 ? (
         <ul className="space-y-1 text-sm" aria-label="Rule failures">
-          {row.ruleFailures.map((f) => (
+          {failures.map((f) => (
             <li key={f.rule + f.field + f.message} className="text-destructive">
               {f.message}
             </li>
@@ -330,7 +380,8 @@ function Editor({
             </Button>
           </div>
           <p className="text-sm text-muted-foreground">
-            Saving re-checks the rules and clears this listing&rsquo;s approval.
+            The rules re-run as you type. Saving stores the text and clears this listing&rsquo;s
+            approval.
           </p>
         </>
       ) : (
@@ -342,10 +393,156 @@ function Editor({
   );
 }
 
+/** One product with its channel listings: one row of the grid. */
+interface ProductGroup {
+  key: string;
+  first: GridRow;
+  listings: GridRow[];
+}
+
+function groupByProduct(rows: GridRow[]): ProductGroup[] {
+  const groups = new Map<string, ProductGroup>();
+  for (const r of rows) {
+    const key = r.productId ?? r.sku;
+    const g = groups.get(key);
+    if (g) g.listings.push(r);
+    else groups.set(key, { key, first: r, listings: [r] });
+  }
+  return [...groups.values()];
+}
+
+const approvable = (r: GridRow) => r.ruleStatus === "passing" && !r.approved;
+
+function lowConfidence(r: GridRow): boolean {
+  return typeof r.confidence === "number" && r.confidence < LOW_CONFIDENCE;
+}
+
+function matches(g: ProductGroup, filter: GridFilter): boolean {
+  switch (filter) {
+    case "failing":
+      return g.listings.some((l) => l.ruleStatus === "failing");
+    case "missing":
+      return g.first.missingAttributes === true;
+    case "low_confidence":
+      return lowConfidence(g.first);
+    case "unapproved":
+      return g.listings.some((l) => !l.approved);
+    case "all":
+      return true;
+  }
+}
+
+const FILTERS: { value: GridFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "failing", label: "Compliance errors" },
+  { value: "missing", label: "Missing attributes" },
+  { value: "low_confidence", label: "Low confidence" },
+  { value: "unapproved", label: "Not approved" },
+];
+
+function checkState(ids: string[], selected: string[]): boolean | "indeterminate" {
+  const n = ids.filter((id) => selected.includes(id)).length;
+  return n === 0 ? false : n === ids.length ? true : "indeterminate";
+}
+
+function Thumb({ row }: { row: GridRow }) {
+  return row.imageUrl ? (
+    <img
+      src={row.imageUrl}
+      alt={row.sku}
+      loading="lazy"
+      className="size-14 shrink-0 rounded-md border bg-muted object-cover"
+    />
+  ) : (
+    <span
+      aria-hidden
+      className="grid size-14 shrink-0 place-items-center rounded-md border bg-muted text-muted-foreground"
+    >
+      <ImageOff className="size-5" />
+    </span>
+  );
+}
+
+function ProductCell({ g }: { g: ProductGroup }) {
+  const r = g.first;
+  return (
+    <div className="flex items-start gap-3">
+      <Thumb row={r} />
+      <div className="min-w-0 flex-1 space-y-1">
+        <p className="font-medium break-words">{r.sku}</p>
+        <div className="flex flex-wrap gap-1">
+          {r.costMicroUsd !== undefined ? (
+            <Badge variant="outline" className="tabular-nums">
+              AI {formatUsdMicro(r.costMicroUsd)}
+            </Badge>
+          ) : null}
+          {lowConfidence(r) ? (
+            <Badge variant="destructive">
+              Low confidence {Math.round((r.confidence ?? 0) * 100)}%
+            </Badge>
+          ) : null}
+          {r.missingAttributes ? <Badge variant="destructive">Missing attributes</Badge> : null}
+        </div>
+        <p className="text-xs break-words text-muted-foreground">
+          {r.attributes || "Not detected"}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ChannelCell({
+  l,
+  reviewer,
+  selectedIds,
+  actions,
+}: {
+  l: GridRow | undefined;
+  reviewer: boolean;
+  selectedIds: string[];
+  actions?: ReviewGridActions | undefined;
+}) {
+  if (!l) return <span className="text-sm text-muted-foreground">No listing</span>;
+  const name = CHANNEL_NAME[l.channel] ?? l.channel;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-start gap-2">
+        {reviewer ? (
+          <Checkbox
+            className="mt-0.5"
+            aria-label={`Select ${l.sku} on ${name}`}
+            checked={selectedIds.includes(l.id)}
+            onCheckedChange={(v) => actions?.onToggleSelect(l.id, v === true)}
+            disabled={!approvable(l)}
+          />
+        ) : null}
+        {actions ? (
+          <Button
+            variant="link"
+            className="h-auto min-w-0 shrink justify-start p-0 text-left break-words whitespace-normal"
+            onClick={() => {
+              actions.onOpen(l.id);
+            }}
+          >
+            {l.title || "Open"}
+          </Button>
+        ) : (
+          <span className="min-w-0 text-sm break-words">{l.title}</span>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <RuleBadge row={l} />
+        <ApprovalCell row={l} />
+      </div>
+    </div>
+  );
+}
+
 /**
- * ReviewGridView: GET /v1/listings (the grid), PATCH /v1/listings/{id},
- * POST .../regeneration-requests and POST /v1/approvals. One row per product
- * and channel (AC-US-00-007-1); approval only for passing rows (Q-009).
+ * ReviewGridView: GET /v1/listings and GET /v1/products (the grid),
+ * PATCH /v1/listings/{id}, POST /v1/rule-checks, POST .../regeneration-requests
+ * and POST /v1/approvals. One row per product with a column per channel
+ * (reviewer flow step 1); approval only for passing listings (Q-009).
  */
 export function ReviewGridView({
   status,
@@ -358,26 +555,20 @@ export function ReviewGridView({
   approveResult,
   clearedByRecheck,
   requestId,
+  liveCheck,
   actions,
 }: ReviewGridViewProps) {
   const reviewer = role === "reviewer";
-  const shown = rows.filter((r) =>
-    filter === "failing"
-      ? r.ruleStatus === "failing"
-      : filter === "unapproved"
-        ? !r.approved
-        : true,
-  );
+  const groups = groupByProduct(rows);
+  const shown = groups.filter((g) => matches(g, filter));
+  const channels = [...new Set(rows.map((r) => r.channel))].sort();
   const editing = rows.find((r) => r.id === editingId);
-  // Only a passing, not yet approved listing can be approved (Q-009).
-  const approvable = (r: GridRow) => r.ruleStatus === "passing" && !r.approved;
-  const readyAll = rows.filter(approvable).length;
-  const shownIds = shown.filter(approvable).map((r) => r.id);
-  const pickedShown = shownIds.filter((id) => selectedIds.includes(id)).length;
-  const allShown: boolean | "indeterminate" =
-    pickedShown === 0 ? false : pickedShown === shownIds.length ? true : "indeterminate";
   const failing = rows.filter((r) => r.ruleStatus === "failing").length;
   const approved = rows.filter((r) => r.approved).length;
+  const readyAll = rows.filter(approvable).length;
+  const shownIds = shown.flatMap((g) => g.listings.filter(approvable).map((l) => l.id));
+  const allShown = checkState(shownIds, selectedIds);
+  const count = (f: GridFilter) => groups.filter((g) => matches(g, f)).length;
 
   return (
     <div className="space-y-6">
@@ -385,7 +576,8 @@ export function ReviewGridView({
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold tracking-tight">Review listings</h1>
           <p className="text-muted-foreground tabular-nums">
-            {rows.length} listings &middot; {approved} approved &middot; {failing} failing rules
+            {groups.length} products &middot; {rows.length} listings &middot; {approved} approved
+            &middot; {failing} failing rules
           </p>
         </div>
         {reviewer && status === "ready" ? (
@@ -456,25 +648,35 @@ export function ReviewGridView({
         <div className="space-y-3 rounded-xl border bg-card p-8 shadow-sm">
           <h2 className="font-medium">Nothing to review yet</h2>
           <p className="max-w-prose text-muted-foreground">
-            Listings appear here as generation writes them. Start generation from Products.
+            Listings appear here as enrichment writes them. Start it from Products.
           </p>
           <Button className="h-11" variant="outline" onClick={actions?.onGoToProducts}>
             Go to products
           </Button>
         </div>
       ) : status === "ready" ? (
-        <div className={cn("grid gap-6", editing && "lg:grid-cols-[minmax(0,1fr)_24rem]")}>
-          <div className={cn("space-y-3", editing && "hidden lg:block")}>
+        <div>
+          <div className="min-w-0 space-y-3">
             <Tabs
               value={filter}
               onValueChange={(v) => {
-                actions?.onFilterChange(v as "all" | "failing" | "unapproved");
+                actions?.onFilterChange(v as GridFilter);
               }}
             >
-              <TabsList aria-label="Filter listings">
-                <TabsTrigger value="all">All</TabsTrigger>
-                <TabsTrigger value="failing">Failing rules</TabsTrigger>
-                <TabsTrigger value="unapproved">Not approved</TabsTrigger>
+              <TabsList
+                aria-label="Filter products"
+                className="w-full justify-start overflow-x-auto overflow-y-hidden sm:w-auto"
+              >
+                {FILTERS.map((f) => (
+                  <TabsTrigger key={f.value} value={f.value} className="flex-none">
+                    {f.label}
+                    {f.value === "all" ? null : (
+                      <span className="ml-1 text-muted-foreground tabular-nums">
+                        {count(f.value)}
+                      </span>
+                    )}
+                  </TabsTrigger>
+                ))}
               </TabsList>
             </Tabs>
 
@@ -510,16 +712,16 @@ export function ReviewGridView({
 
             {shown.length === 0 ? (
               <p className="rounded-xl border bg-card p-6 text-muted-foreground shadow-sm">
-                No listings match this filter. Every listing passes its channel&rsquo;s rules.
+                No products match this filter.
               </p>
             ) : (
               <>
                 <div className="hidden overflow-x-auto rounded-xl border bg-card shadow-sm md:block">
-                  <Table>
+                  <Table className="min-w-[44rem] table-fixed">
                     <TableHeader>
                       <TableRow>
                         {reviewer ? (
-                          <TableHead className="w-10">
+                          <TableHead className="w-12">
                             <Checkbox
                               checked={allShown}
                               disabled={shownIds.length === 0}
@@ -528,104 +730,104 @@ export function ReviewGridView({
                             />
                           </TableHead>
                         ) : null}
-                        <TableHead>SKU</TableHead>
-                        <TableHead>Channel</TableHead>
-                        <TableHead>Title</TableHead>
-                        <TableHead>Rules</TableHead>
-                        <TableHead>Approval</TableHead>
+                        <TableHead className="w-64">Product</TableHead>
+                        {channels.map((c) => (
+                          <TableHead key={c}>{CHANNEL_NAME[c] ?? c}</TableHead>
+                        ))}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {shown.map((r) => (
-                        <TableRow
-                          key={r.id}
-                          data-state={r.id === editingId ? "selected" : undefined}
-                        >
-                          {reviewer ? (
-                            <TableCell>
-                              <Checkbox
-                                aria-label={`Select ${r.sku} on ${CHANNEL_NAME[r.channel]}`}
-                                checked={selectedIds.includes(r.id)}
-                                onCheckedChange={(v) => actions?.onToggleSelect(r.id, v === true)}
-                                disabled={r.ruleStatus !== "passing" || r.approved}
-                              />
+                      {shown.map((g) => {
+                        const ids = g.listings.filter(approvable).map((l) => l.id);
+                        return (
+                          <TableRow
+                            key={g.key}
+                            data-state={
+                              g.listings.some((l) => l.id === editingId) ? "selected" : undefined
+                            }
+                          >
+                            {reviewer ? (
+                              <TableCell className="align-top">
+                                <Checkbox
+                                  aria-label={`Select every passing listing of ${g.first.sku}`}
+                                  checked={checkState(ids, selectedIds)}
+                                  disabled={ids.length === 0}
+                                  onCheckedChange={(v) => actions?.onSelectMany(ids, v === true)}
+                                />
+                              </TableCell>
+                            ) : null}
+                            <TableCell className="align-top whitespace-normal">
+                              <ProductCell g={g} />
                             </TableCell>
-                          ) : null}
-                          <TableCell className="font-medium">{r.sku}</TableCell>
-                          <TableCell>{CHANNEL_NAME[r.channel] ?? r.channel}</TableCell>
-                          <TableCell className="max-w-80 truncate">
-                            {actions ? (
-                              <Button
-                                variant="link"
-                                className="h-auto max-w-full justify-start truncate p-0"
-                                onClick={() => {
-                                  actions.onOpen(r.id);
-                                }}
-                              >
-                                {r.title || "Open"}
-                              </Button>
-                            ) : (
-                              r.title
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            <RuleBadge row={r} />
-                          </TableCell>
-                          <TableCell>
-                            <ApprovalCell row={r} />
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                            {channels.map((c) => (
+                              <TableCell key={c} className="align-top whitespace-normal">
+                                <ChannelCell
+                                  l={g.listings.find((l) => l.channel === c)}
+                                  reviewer={reviewer}
+                                  selectedIds={selectedIds}
+                                  actions={actions}
+                                />
+                              </TableCell>
+                            ))}
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>
-                <ul className="space-y-2 md:hidden" aria-label="Listings">
-                  {shown.map((r) => (
-                    <li key={r.id} className="space-y-2 rounded-xl border bg-card p-3 shadow-sm">
-                      <div className="flex items-center justify-between gap-2">
-                        {reviewer ? (
-                          <Checkbox
-                            className="size-6"
-                            aria-label={`Select ${r.sku} on ${CHANNEL_NAME[r.channel]}`}
-                            checked={selectedIds.includes(r.id)}
-                            onCheckedChange={(v) => actions?.onToggleSelect(r.id, v === true)}
-                            disabled={r.ruleStatus !== "passing" || r.approved}
+                <ul className="space-y-2 md:hidden" aria-label="Products">
+                  {shown.map((g) => (
+                    <li key={g.key} className="space-y-3 rounded-xl border bg-card p-3 shadow-sm">
+                      <ProductCell g={g} />
+                      {g.listings.map((l) => (
+                        <div key={l.id} className="space-y-1 border-t pt-2">
+                          <p className="text-xs font-medium text-muted-foreground">
+                            {CHANNEL_NAME[l.channel] ?? l.channel}
+                          </p>
+                          <ChannelCell
+                            l={l}
+                            reviewer={reviewer}
+                            selectedIds={selectedIds}
+                            actions={actions}
                           />
-                        ) : null}
-                        <span className="mr-auto font-medium">
-                          {r.sku} &middot; {CHANNEL_NAME[r.channel]}
-                        </span>
-                        <RuleBadge row={r} />
-                      </div>
-                      {actions ? (
-                        <Button
-                          variant="link"
-                          className="h-auto p-0 text-left whitespace-normal"
-                          onClick={() => {
-                            actions.onOpen(r.id);
-                          }}
-                        >
-                          {r.title || "Open"}
-                        </Button>
-                      ) : (
-                        <p className="line-clamp-2 text-sm">{r.title}</p>
-                      )}
-                      <ApprovalCell row={r} />
+                        </div>
+                      ))}
                     </li>
                   ))}
                 </ul>
               </>
             )}
           </div>
-          {editing ? (
-            <Editor
-              key={`${editing.id}:${String(editing.version)}`}
-              row={editing}
-              role={role}
-              conflict={conflict}
-              actions={actions}
-            />
-          ) : null}
+          {/* The editor slides over the grid, which keeps its full width. */}
+          <Sheet
+            open={editing !== undefined}
+            onOpenChange={(open) => {
+              if (!open) actions?.onClose();
+            }}
+          >
+            <SheetContent
+              side="right"
+              showCloseButton={false}
+              aria-describedby={undefined}
+              className="w-full gap-0 overflow-y-auto p-0 sm:max-w-xl"
+            >
+              <SheetTitle className="sr-only">
+                {editing
+                  ? `Edit ${editing.sku} on ${CHANNEL_NAME[editing.channel] ?? editing.channel}`
+                  : "Edit listing"}
+              </SheetTitle>
+              {editing ? (
+                <Editor
+                  key={`${editing.id}:${String(editing.version)}`}
+                  row={editing}
+                  role={role}
+                  conflict={conflict}
+                  actions={actions}
+                  liveCheck={liveCheck}
+                />
+              ) : null}
+            </SheetContent>
+          </Sheet>
         </div>
       ) : null}
     </div>

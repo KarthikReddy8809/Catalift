@@ -1,6 +1,6 @@
 # ADR-0006: Use our own login with seeded accounts and seller and reviewer roles
 
-- Status: Accepted
+- Status: Accepted; partly superseded by ADR-0012 (export access and brand voice)
 - Date: 2026-10-01
 - Task: none
 - Deciders: Karthik Reddy

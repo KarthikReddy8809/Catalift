@@ -1,15 +1,4 @@
-import {
-  Download,
-  LayoutGrid,
-  ListChecks,
-  LogOut,
-  Moon,
-  Settings2,
-  Sparkles,
-  Sun,
-  Upload,
-  type LucideIcon,
-} from "lucide-react";
+import { LogOut, Moon, Sparkles, Sun } from "lucide-react";
 import type { MouseEvent, ReactNode } from "react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -20,27 +9,9 @@ import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 
 import { formatUsdMicro } from "../format";
+import { NAV, navAllowed, type NavKey, type Role } from "../nav";
 
-export type Role = "seller" | "reviewer";
-export type NavKey = "upload" | "products" | "review" | "export" | "channels";
-
-interface NavItem {
-  key: NavKey;
-  label: string;
-  screen: string;
-  icon: LucideIcon;
-  reviewerOnly?: boolean;
-}
-
-// The launch runs left to right: upload, products, review, export. Channels
-// is reference, so it sits last.
-const NAV: NavItem[] = [
-  { key: "upload", label: "Upload", screen: "S-03", icon: Upload },
-  { key: "products", label: "Products", screen: "S-04", icon: LayoutGrid },
-  { key: "review", label: "Review", screen: "S-05", icon: ListChecks },
-  { key: "export", label: "Export", screen: "S-06", icon: Download, reviewerOnly: true },
-  { key: "channels", label: "Channels", screen: "S-07", icon: Settings2 },
-];
+export type { NavKey, Role } from "../nav";
 
 export interface BudgetSummary {
   spentMicroUsd: number;
@@ -108,7 +79,7 @@ export function AppFrame({
     e.preventDefault();
     onNavigate(e.currentTarget.getAttribute("href") ?? "/");
   };
-  const items = NAV.filter((n) => role === "reviewer" || !n.reviewerOnly);
+  const items = NAV.filter((n) => navAllowed(role, n.key));
   const spent = formatUsdMicro(budget.spentMicroUsd);
   const limit = formatUsdMicro(budget.limitMicroUsd);
   const share = budget.limitMicroUsd > 0 ? (budget.spentMicroUsd / budget.limitMicroUsd) * 100 : 0;

@@ -18,6 +18,8 @@ settled again, differently, in each file that runs into it.
 | ADR-0009 | Use GitLab CI for checks, image builds and manual deploys | ci and delivery | Superseded by ADR-0011 | cheap: jobs call make targets; only the pipeline file changes |
 | ADR-0010 | Use Google Cloud Logging and Monitoring through the Ops Agent | observability | Accepted | cheap: standard logs and metrics; swap the agent and recreate five alerts |
 | ADR-0011 | Host Catalift on GitHub and run CI with GitHub Actions | ci and delivery | Accepted | cheap: jobs call make targets; only the workflow files change |
+| ADR-0012 | Reviewers send approved exports to the seller; the seller owns brand voice | roles and access | Accepted | cheap: role checks on four routes and the sidebar; additive columns |
+| ADR-0013 | Deploy with Caddy, Artifact Registry images, Secret Manager and nightly backups | compute and delivery | Accepted | cheap: compose and Caddyfile on one VM; the images run anywhere |
 
 ## Conflicts that were settled
 

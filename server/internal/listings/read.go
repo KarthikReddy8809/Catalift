@@ -2,8 +2,13 @@ package listings
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/KarthikReddy8809/catalift/server/internal/channels"
 	"github.com/KarthikReddy8809/catalift/server/internal/store"
 )
 
@@ -74,4 +79,47 @@ func (s *Service) Budget(ctx context.Context) (store.GetBudgetRow, error) {
 		return store.GetBudgetRow{}, fmt.Errorf("read budget: %w", err)
 	}
 	return b, nil
+}
+
+// CheckDraft runs the channel's rules on a listing with some fields replaced,
+// without saving anything, so the editor's badge follows the reviewer's
+// typing (reviewer flow step 3). Fields left nil keep the stored text.
+func (s *Service) CheckDraft(ctx context.Context, listingID int64, e Edit) ([]channels.Failure, error) {
+	q := store.New(s.pool)
+	l, err := q.GetListing(ctx, listingID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load listing: %w", err)
+	}
+	ch, ok := s.rules.Current().Get(l.Channel)
+	if !ok {
+		return nil, ErrNotFound
+	}
+	attrs := map[string]string{}
+	if a, err := q.GetAttributes(ctx, l.ProductID); err == nil {
+		attrs = map[string]string{"colour": txt(a.Colour), "pattern": txt(a.Pattern), "sleeve": txt(a.Sleeve), "neckline": txt(a.Neckline), "fit": txt(a.Fit)}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("load attributes: %w", err)
+	}
+	avoid, err := q.AvoidWordsForProduct(ctx, l.ProductID)
+	if err != nil {
+		return nil, fmt.Errorf("load brand words to avoid: %w", err)
+	}
+	pick := func(edit *string, stored pgtype.Text) string {
+		if edit != nil {
+			return *edit
+		}
+		return stored.String
+	}
+	stored := [5]pgtype.Text{l.Bullet1, l.Bullet2, l.Bullet3, l.Bullet4, l.Bullet5}
+	var bullets [5]string
+	for i := range bullets {
+		bullets[i] = pick(e.Bullets[i], stored[i])
+	}
+	return channels.Validate(ch, channels.Listing{
+		Title: pick(e.Title, l.Title), Bullets: bullets, Description: pick(e.Description, l.Description), Attributes: attrs,
+		AvoidWords: avoid,
+	}), nil
 }

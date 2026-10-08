@@ -70,6 +70,22 @@ func TestValidate(t *testing.T) {
 			want:   []string{"required_attribute:colour"},
 		},
 		{
+			name: "a brand's word to avoid in the description",
+			mutate: func(l *Listing) {
+				l.AvoidWords = []string{"cheap"}
+				l.Description = "A Cheap, everyday navy kurta."
+			},
+			want: []string{"brand_avoid_word:description"},
+		},
+		{
+			name: "a brand's words to avoid match whole words only",
+			mutate: func(l *Listing) {
+				l.AvoidWords = []string{"cheap"}
+				l.Description = "Cheaply priced? No: cheapest is not a word we use."
+			},
+			want: []string{},
+		},
+		{
 			name:   "empty bullet",
 			mutate: func(l *Listing) { l.Bullets[2] = "  " },
 			want:   []string{"empty_field:bullet_3"},

@@ -11,6 +11,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const avoidWordsForProduct = `-- name: AvoidWordsForProduct :one
+SELECT b.words_to_avoid FROM products p JOIN brands b ON b.id = p.brand_id WHERE p.id = $1
+`
+
+func (q *Queries) AvoidWordsForProduct(ctx context.Context, id int64) ([]string, error) {
+	row := q.db.QueryRow(ctx, avoidWordsForProduct, id)
+	var words_to_avoid []string
+	err := row.Scan(&words_to_avoid)
+	return words_to_avoid, err
+}
+
 const brandsWithoutVoice = `-- name: BrandsWithoutVoice :many
 SELECT DISTINCT b.name
 FROM brands b
@@ -40,6 +51,16 @@ func (q *Queries) BrandsWithoutVoice(ctx context.Context, uploadID pgtype.Int8) 
 	return items, nil
 }
 
+const countRowFixed = `-- name: CountRowFixed :exec
+UPDATE uploads SET rows_accepted = rows_accepted + 1, rows_rejected = rows_rejected - 1, updated_at = now()
+WHERE id = $1 AND rows_rejected > 0
+`
+
+func (q *Queries) CountRowFixed(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, countRowFixed, id)
+	return err
+}
+
 const createUpload = `-- name: CreateUpload :one
 INSERT INTO uploads (uploaded_by, file_name, rows_total, rows_accepted, rows_rejected)
 VALUES ($1, $2, 0, 0, 0)
@@ -56,6 +77,45 @@ func (q *Queries) CreateUpload(ctx context.Context, arg CreateUploadParams) (int
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const deleteRowError = `-- name: DeleteRowError :exec
+DELETE FROM upload_row_errors WHERE id = $1
+`
+
+func (q *Queries) DeleteRowError(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, deleteRowError, id)
+	return err
+}
+
+const discardRowError = `-- name: DiscardRowError :execrows
+DELETE FROM upload_row_errors WHERE upload_id = $1 AND row_number = $2
+`
+
+type DiscardRowErrorParams struct {
+	UploadID  int64 `json:"upload_id"`
+	RowNumber int32 `json:"row_number"`
+}
+
+func (q *Queries) DiscardRowError(ctx context.Context, arg DiscardRowErrorParams) (int64, error) {
+	result, err := q.db.Exec(ctx, discardRowError, arg.UploadID, arg.RowNumber)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const discardRowErrors = `-- name: DiscardRowErrors :execrows
+DELETE FROM upload_row_errors
+WHERE ($1::bigint IS NULL OR upload_id = $1)
+`
+
+func (q *Queries) DiscardRowErrors(ctx context.Context, uploadID pgtype.Int8) (int64, error) {
+	result, err := q.db.Exec(ctx, discardRowErrors, uploadID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const finishUpload = `-- name: FinishUpload :exec
@@ -97,19 +157,46 @@ func (q *Queries) FirstImage(ctx context.Context, productID int64) (FirstImageRo
 	return i, err
 }
 
+const generatedListingsOfBrand = `-- name: GeneratedListingsOfBrand :many
+SELECT l.id FROM listings l JOIN products p ON p.id = l.product_id
+WHERE p.brand_id = $1 AND l.status = 'generated'
+ORDER BY l.id
+`
+
+func (q *Queries) GeneratedListingsOfBrand(ctx context.Context, brandID int64) ([]int64, error) {
+	rows, err := q.db.Query(ctx, generatedListingsOfBrand, brandID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getProductForPrompt = `-- name: GetProductForPrompt :one
-SELECT p.id, p.sku, p.category, p.price_minor, p.currency, b.name AS brand_name, b.voice_note
+SELECT p.id, p.sku, p.category, p.price_minor, p.currency, b.name AS brand_name, b.voice_note, b.words_to_avoid
 FROM products p JOIN brands b ON b.id = p.brand_id WHERE p.id = $1
 `
 
 type GetProductForPromptRow struct {
-	ID         int64       `json:"id"`
-	Sku        string      `json:"sku"`
-	Category   string      `json:"category"`
-	PriceMinor int64       `json:"price_minor"`
-	Currency   string      `json:"currency"`
-	BrandName  string      `json:"brand_name"`
-	VoiceNote  pgtype.Text `json:"voice_note"`
+	ID           int64       `json:"id"`
+	Sku          string      `json:"sku"`
+	Category     string      `json:"category"`
+	PriceMinor   int64       `json:"price_minor"`
+	Currency     string      `json:"currency"`
+	BrandName    string      `json:"brand_name"`
+	VoiceNote    pgtype.Text `json:"voice_note"`
+	WordsToAvoid []string    `json:"words_to_avoid"`
 }
 
 func (q *Queries) GetProductForPrompt(ctx context.Context, id int64) (GetProductForPromptRow, error) {
@@ -123,8 +210,52 @@ func (q *Queries) GetProductForPrompt(ctx context.Context, id int64) (GetProduct
 		&i.Currency,
 		&i.BrandName,
 		&i.VoiceNote,
+		&i.WordsToAvoid,
 	)
 	return i, err
+}
+
+const getProductForUpdate = `-- name: GetProductForUpdate :one
+SELECT p.id, p.sku, p.category, p.price_minor, b.name AS brand_name
+FROM products p JOIN brands b ON b.id = p.brand_id
+WHERE p.id = $1 FOR UPDATE OF p
+`
+
+type GetProductForUpdateRow struct {
+	ID         int64  `json:"id"`
+	Sku        string `json:"sku"`
+	Category   string `json:"category"`
+	PriceMinor int64  `json:"price_minor"`
+	BrandName  string `json:"brand_name"`
+}
+
+func (q *Queries) GetProductForUpdate(ctx context.Context, id int64) (GetProductForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getProductForUpdate, id)
+	var i GetProductForUpdateRow
+	err := row.Scan(
+		&i.ID,
+		&i.Sku,
+		&i.Category,
+		&i.PriceMinor,
+		&i.BrandName,
+	)
+	return i, err
+}
+
+const getRowErrorForUpdate = `-- name: GetRowErrorForUpdate :one
+SELECT id FROM upload_row_errors WHERE upload_id = $1 AND row_number = $2 FOR UPDATE
+`
+
+type GetRowErrorForUpdateParams struct {
+	UploadID  int64 `json:"upload_id"`
+	RowNumber int32 `json:"row_number"`
+}
+
+func (q *Queries) GetRowErrorForUpdate(ctx context.Context, arg GetRowErrorForUpdateParams) (int64, error) {
+	row := q.db.QueryRow(ctx, getRowErrorForUpdate, arg.UploadID, arg.RowNumber)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getUpload = `-- name: GetUpload :one
@@ -216,14 +347,18 @@ func (q *Queries) InsertProduct(ctx context.Context, arg InsertProductParams) (i
 }
 
 const insertRowError = `-- name: InsertRowError :exec
-INSERT INTO upload_row_errors (upload_id, row_number, sku, reason) VALUES ($1, $2, $3, $4)
+INSERT INTO upload_row_errors (upload_id, row_number, sku, reason, raw_category, raw_brand, raw_price)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type InsertRowErrorParams struct {
-	UploadID  int64       `json:"upload_id"`
-	RowNumber int32       `json:"row_number"`
-	Sku       pgtype.Text `json:"sku"`
-	Reason    string      `json:"reason"`
+	UploadID    int64       `json:"upload_id"`
+	RowNumber   int32       `json:"row_number"`
+	Sku         pgtype.Text `json:"sku"`
+	Reason      string      `json:"reason"`
+	RawCategory pgtype.Text `json:"raw_category"`
+	RawBrand    pgtype.Text `json:"raw_brand"`
+	RawPrice    pgtype.Text `json:"raw_price"`
 }
 
 func (q *Queries) InsertRowError(ctx context.Context, arg InsertRowErrorParams) error {
@@ -232,6 +367,9 @@ func (q *Queries) InsertRowError(ctx context.Context, arg InsertRowErrorParams) 
 		arg.RowNumber,
 		arg.Sku,
 		arg.Reason,
+		arg.RawCategory,
+		arg.RawBrand,
+		arg.RawPrice,
 	)
 	return err
 }
@@ -248,20 +386,23 @@ func (q *Queries) LatestUpload(ctx context.Context) (int64, error) {
 }
 
 const listBrands = `-- name: ListBrands :many
-SELECT id, name, voice_note, created_at, updated_at
+SELECT id, name, voice_note, created_at, updated_at, words_to_avoid
 FROM brands
 WHERE lower(name) > lower($1::text)
+  AND ($2::bigint IS NULL
+       OR EXISTS (SELECT 1 FROM products p WHERE p.brand_id = brands.id AND p.upload_id = $2))
 ORDER BY lower(name)
-LIMIT $2
+LIMIT $3
 `
 
 type ListBrandsParams struct {
-	AfterName string `json:"after_name"`
-	PageSize  int32  `json:"page_size"`
+	AfterName string      `json:"after_name"`
+	UploadID  pgtype.Int8 `json:"upload_id"`
+	PageSize  int32       `json:"page_size"`
 }
 
 func (q *Queries) ListBrands(ctx context.Context, arg ListBrandsParams) ([]Brand, error) {
-	rows, err := q.db.Query(ctx, listBrands, arg.AfterName, arg.PageSize)
+	rows, err := q.db.Query(ctx, listBrands, arg.AfterName, arg.UploadID, arg.PageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -275,6 +416,55 @@ func (q *Queries) ListBrands(ctx context.Context, arg ListBrandsParams) ([]Brand
 			&i.VoiceNote,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.WordsToAvoid,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenRowErrors = `-- name: ListOpenRowErrors :many
+SELECT e.upload_id, u.file_name, e.row_number, e.sku, e.reason, e.raw_category, e.raw_brand, e.raw_price
+FROM upload_row_errors e
+JOIN uploads u ON u.id = e.upload_id
+WHERE ($1::bigint IS NULL OR e.upload_id = $1)
+ORDER BY e.upload_id DESC, e.row_number
+`
+
+type ListOpenRowErrorsRow struct {
+	UploadID    int64       `json:"upload_id"`
+	FileName    string      `json:"file_name"`
+	RowNumber   int32       `json:"row_number"`
+	Sku         pgtype.Text `json:"sku"`
+	Reason      string      `json:"reason"`
+	RawCategory pgtype.Text `json:"raw_category"`
+	RawBrand    pgtype.Text `json:"raw_brand"`
+	RawPrice    pgtype.Text `json:"raw_price"`
+}
+
+func (q *Queries) ListOpenRowErrors(ctx context.Context, uploadID pgtype.Int8) ([]ListOpenRowErrorsRow, error) {
+	rows, err := q.db.Query(ctx, listOpenRowErrors, uploadID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOpenRowErrorsRow
+	for rows.Next() {
+		var i ListOpenRowErrorsRow
+		if err := rows.Scan(
+			&i.UploadID,
+			&i.FileName,
+			&i.RowNumber,
+			&i.Sku,
+			&i.Reason,
+			&i.RawCategory,
+			&i.RawBrand,
+			&i.RawPrice,
 		); err != nil {
 			return nil, err
 		}
@@ -287,13 +477,22 @@ func (q *Queries) ListBrands(ctx context.Context, arg ListBrandsParams) ([]Brand
 }
 
 const listProducts = `-- name: ListProducts :many
-SELECT p.id, p.sku, p.category, p.price_minor, p.currency, p.created_at,
+SELECT p.id, p.sku, p.category, p.price_minor, p.currency, p.created_at, p.upload_id,
        b.id AS brand_id, b.name AS brand_name,
        (SELECT count(*) FROM product_images i WHERE i.product_id = p.id)::int AS image_count,
        coalesce(a.detection_status, 'pending')::detection_status AS detection_status,
        coalesce(a.revision, 0)::int AS revision,
-       a.colour, a.pattern, a.sleeve, a.neckline, a.fit, a.detection_error,
-       coalesce((SELECT sum(s.spend_micro_usd) FROM ai_call_spend s WHERE s.product_id = p.id), 0)::bigint AS ai_cost_micro_usd
+       a.colour, a.pattern, a.sleeve, a.neckline, a.fit, a.detection_error, a.detection_confidence,
+       (a.product_id IS NOT NULL)::boolean AS enrichment_started,
+       coalesce((SELECT sum(s.spend_micro_usd) FROM ai_call_spend s WHERE s.product_id = p.id), 0)::bigint AS ai_cost_micro_usd,
+       -- Listing counts the product status is derived from (seller flow step 5).
+       (SELECT count(*) FROM listings l WHERE l.product_id = p.id)::int AS listings_total,
+       (SELECT count(*) FROM listings l WHERE l.product_id = p.id AND l.status = 'queued')::int AS listings_queued,
+       (SELECT count(*) FROM listings l WHERE l.product_id = p.id AND l.status = 'failed')::int AS listings_failed,
+       (SELECT count(*) FROM listings l WHERE l.product_id = p.id AND l.status = 'stopped_budget')::int AS listings_stopped,
+       (SELECT count(*) FROM listings l WHERE l.product_id = p.id AND l.rule_status = 'failing')::int AS listings_failing,
+       (SELECT count(*) FROM listings l WHERE l.product_id = p.id AND EXISTS (
+          SELECT 1 FROM approvals ap WHERE ap.listing_id = l.id AND ap.listing_version = l.version))::int AS listings_approved
 FROM products p
 JOIN brands b ON b.id = p.brand_id
 LEFT JOIN product_attributes a ON a.product_id = p.id
@@ -315,24 +514,33 @@ type ListProductsParams struct {
 }
 
 type ListProductsRow struct {
-	ID              int64              `json:"id"`
-	Sku             string             `json:"sku"`
-	Category        string             `json:"category"`
-	PriceMinor      int64              `json:"price_minor"`
-	Currency        string             `json:"currency"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	BrandID         int64              `json:"brand_id"`
-	BrandName       string             `json:"brand_name"`
-	ImageCount      int32              `json:"image_count"`
-	DetectionStatus DetectionStatus    `json:"detection_status"`
-	Revision        int32              `json:"revision"`
-	Colour          pgtype.Text        `json:"colour"`
-	Pattern         pgtype.Text        `json:"pattern"`
-	Sleeve          pgtype.Text        `json:"sleeve"`
-	Neckline        pgtype.Text        `json:"neckline"`
-	Fit             pgtype.Text        `json:"fit"`
-	DetectionError  pgtype.Text        `json:"detection_error"`
-	AiCostMicroUsd  int64              `json:"ai_cost_micro_usd"`
+	ID                  int64              `json:"id"`
+	Sku                 string             `json:"sku"`
+	Category            string             `json:"category"`
+	PriceMinor          int64              `json:"price_minor"`
+	Currency            string             `json:"currency"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UploadID            int64              `json:"upload_id"`
+	BrandID             int64              `json:"brand_id"`
+	BrandName           string             `json:"brand_name"`
+	ImageCount          int32              `json:"image_count"`
+	DetectionStatus     DetectionStatus    `json:"detection_status"`
+	Revision            int32              `json:"revision"`
+	Colour              pgtype.Text        `json:"colour"`
+	Pattern             pgtype.Text        `json:"pattern"`
+	Sleeve              pgtype.Text        `json:"sleeve"`
+	Neckline            pgtype.Text        `json:"neckline"`
+	Fit                 pgtype.Text        `json:"fit"`
+	DetectionError      pgtype.Text        `json:"detection_error"`
+	DetectionConfidence pgtype.Float4      `json:"detection_confidence"`
+	EnrichmentStarted   bool               `json:"enrichment_started"`
+	AiCostMicroUsd      int64              `json:"ai_cost_micro_usd"`
+	ListingsTotal       int32              `json:"listings_total"`
+	ListingsQueued      int32              `json:"listings_queued"`
+	ListingsFailed      int32              `json:"listings_failed"`
+	ListingsStopped     int32              `json:"listings_stopped"`
+	ListingsFailing     int32              `json:"listings_failing"`
+	ListingsApproved    int32              `json:"listings_approved"`
 }
 
 func (q *Queries) ListProducts(ctx context.Context, arg ListProductsParams) ([]ListProductsRow, error) {
@@ -357,6 +565,7 @@ func (q *Queries) ListProducts(ctx context.Context, arg ListProductsParams) ([]L
 			&i.PriceMinor,
 			&i.Currency,
 			&i.CreatedAt,
+			&i.UploadID,
 			&i.BrandID,
 			&i.BrandName,
 			&i.ImageCount,
@@ -368,7 +577,15 @@ func (q *Queries) ListProducts(ctx context.Context, arg ListProductsParams) ([]L
 			&i.Neckline,
 			&i.Fit,
 			&i.DetectionError,
+			&i.DetectionConfidence,
+			&i.EnrichmentStarted,
 			&i.AiCostMicroUsd,
+			&i.ListingsTotal,
+			&i.ListingsQueued,
+			&i.ListingsFailed,
+			&i.ListingsStopped,
+			&i.ListingsFailing,
+			&i.ListingsApproved,
 		); err != nil {
 			return nil, err
 		}
@@ -450,6 +667,20 @@ func (q *Queries) NextImagePosition(ctx context.Context, productID int64) (int16
 	return column_1, err
 }
 
+const productHasApprovals = `-- name: ProductHasApprovals :one
+SELECT EXISTS (
+  SELECT 1 FROM listings l JOIN approvals a ON a.listing_id = l.id AND a.listing_version = l.version
+  WHERE l.product_id = $1
+)::boolean
+`
+
+func (q *Queries) ProductHasApprovals(ctx context.Context, productID int64) (bool, error) {
+	row := q.db.QueryRow(ctx, productHasApprovals, productID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const productIDsForRun = `-- name: ProductIDsForRun :many
 SELECT p.id FROM products p
 WHERE ($1::bigint IS NULL OR p.upload_id = $1)
@@ -503,19 +734,39 @@ func (q *Queries) ProductsMissingImage(ctx context.Context, uploadID int64) ([]s
 	return items, nil
 }
 
+const skuTakenByOther = `-- name: SkuTakenByOther :one
+SELECT EXISTS (SELECT 1 FROM products WHERE lower(sku) = lower($1::text) AND id <> $2)::boolean
+`
+
+type SkuTakenByOtherParams struct {
+	Sku string `json:"sku"`
+	ID  int64  `json:"id"`
+}
+
+func (q *Queries) SkuTakenByOther(ctx context.Context, arg SkuTakenByOtherParams) (bool, error) {
+	row := q.db.QueryRow(ctx, skuTakenByOther, arg.Sku, arg.ID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const updateBrandVoice = `-- name: UpdateBrandVoice :one
-UPDATE brands SET voice_note = $1, updated_at = now()
-WHERE id = $2
-RETURNING id, name, voice_note, created_at, updated_at
+UPDATE brands SET voice_note = $1,
+    words_to_avoid = coalesce($2::text[], words_to_avoid),
+    updated_at = now()
+WHERE id = $3
+RETURNING id, name, voice_note, created_at, updated_at, words_to_avoid
 `
 
 type UpdateBrandVoiceParams struct {
-	VoiceNote pgtype.Text `json:"voice_note"`
-	ID        int64       `json:"id"`
+	VoiceNote    pgtype.Text `json:"voice_note"`
+	WordsToAvoid []string    `json:"words_to_avoid"`
+	ID           int64       `json:"id"`
 }
 
+// A null words_to_avoid keeps the stored list.
 func (q *Queries) UpdateBrandVoice(ctx context.Context, arg UpdateBrandVoiceParams) (Brand, error) {
-	row := q.db.QueryRow(ctx, updateBrandVoice, arg.VoiceNote, arg.ID)
+	row := q.db.QueryRow(ctx, updateBrandVoice, arg.VoiceNote, arg.WordsToAvoid, arg.ID)
 	var i Brand
 	err := row.Scan(
 		&i.ID,
@@ -523,8 +774,61 @@ func (q *Queries) UpdateBrandVoice(ctx context.Context, arg UpdateBrandVoicePara
 		&i.VoiceNote,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WordsToAvoid,
 	)
 	return i, err
+}
+
+const updateProductFields = `-- name: UpdateProductFields :exec
+UPDATE products SET sku = $2, brand_id = $3, category = $4, price_minor = $5, updated_at = now()
+WHERE id = $1
+`
+
+type UpdateProductFieldsParams struct {
+	ID         int64  `json:"id"`
+	Sku        string `json:"sku"`
+	BrandID    int64  `json:"brand_id"`
+	Category   string `json:"category"`
+	PriceMinor int64  `json:"price_minor"`
+}
+
+func (q *Queries) UpdateProductFields(ctx context.Context, arg UpdateProductFieldsParams) error {
+	_, err := q.db.Exec(ctx, updateProductFields,
+		arg.ID,
+		arg.Sku,
+		arg.BrandID,
+		arg.Category,
+		arg.PriceMinor,
+	)
+	return err
+}
+
+const updateRowError = `-- name: UpdateRowError :exec
+UPDATE upload_row_errors
+SET sku = $1, reason = $2, raw_category = $3,
+    raw_brand = $4, raw_price = $5
+WHERE id = $6
+`
+
+type UpdateRowErrorParams struct {
+	Sku         pgtype.Text `json:"sku"`
+	Reason      string      `json:"reason"`
+	RawCategory pgtype.Text `json:"raw_category"`
+	RawBrand    pgtype.Text `json:"raw_brand"`
+	RawPrice    pgtype.Text `json:"raw_price"`
+	ID          int64       `json:"id"`
+}
+
+func (q *Queries) UpdateRowError(ctx context.Context, arg UpdateRowErrorParams) error {
+	_, err := q.db.Exec(ctx, updateRowError,
+		arg.Sku,
+		arg.Reason,
+		arg.RawCategory,
+		arg.RawBrand,
+		arg.RawPrice,
+		arg.ID,
+	)
+	return err
 }
 
 const upsertBrand = `-- name: UpsertBrand :one

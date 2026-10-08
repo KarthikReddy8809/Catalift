@@ -1,0 +1,12 @@
+# Product categories the upload accepts (seller flow step 2). A CSV row with
+# any other category is rejected with a reason before any AI call is made.
+# Matched without regard to case or surrounding spaces. Decided 2026-10-05:
+# the ethnic wear set, matching the PRD's apparel scope.
+categories:
+  - kurta
+  - kurti
+  - saree
+  - lehenga
+  - salwar suit
+  - sherwani
+  - dupatta

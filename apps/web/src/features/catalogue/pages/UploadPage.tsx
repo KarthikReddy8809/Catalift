@@ -1,7 +1,9 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { sessionQueryOptions } from "@/features/auth/api";
 import { ApiError, errorBody } from "@/lib/api";
 
 import { catalogueKeys, uploadCsv, uploadImages, type ImagesResult, type Upload } from "../api";
@@ -16,8 +18,28 @@ function problemFor(err: unknown, fileName: string): UploadProblem {
   return { kind: "server", requestId: id };
 }
 
-/** UploadPage: the CSV first, then the photos, against one upload (US-00-001). */
+/** UploadPage: sellers upload; a reviewer who opens the address is told why not. */
 export function UploadPage() {
+  const { data: session } = useSuspenseQuery(sessionQueryOptions());
+  if (session?.user.role !== "seller") {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-2xl font-semibold tracking-tight">Upload a launch</h1>
+        <Alert role="alert">
+          <AlertTitle>Uploading is for sellers</AlertTitle>
+          <AlertDescription>
+            Sellers bring products and photos in; reviewers check and approve what they produce.
+            Carry on in Review.
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+  return <SellerUpload />;
+}
+
+/** SellerUpload: the CSV first, then the photos, against one upload (US-00-001). */
+function SellerUpload() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [upload, setUpload] = useState<Upload | null>(null);

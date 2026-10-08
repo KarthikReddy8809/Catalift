@@ -1,0 +1,100 @@
+# Catalift on one VM (ADR-0002): Postgres, the one-shot migrations, the API,
+# the worker and Caddy. Only Caddy publishes ports; the rest talk on the
+# compose network. deploy.sh writes .env (root-only) with TAG, REGISTRY,
+# SITE_ADDRESS and the secrets read from Secret Manager; nothing secret is
+# in this file or in an image.
+#
+# On the VM the data disk is mounted at /mnt/data:
+#   postgres/  database files          app/    product images and exports
+#   web/       web builds (current ->)  caddy/  certificates and Caddy state
+
+x-logging: &logging
+  # Container logs go straight to Cloud Logging as the VM's service account (ADR-0010).
+  driver: gcplogs
+
+services:
+  postgres:
+    image: postgres:16.10
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: catalift
+      POSTGRES_USER: catalift
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run deploy.sh, it writes .env}
+    volumes:
+      - /mnt/data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U catalift -d catalift"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    shm_size: 256mb
+    logging: *logging
+
+  # Runs every pending migration once per deploy, then exits (HLD section 12).
+  # The API and the worker refuse to start against a database behind them.
+  migrate:
+    image: ${REGISTRY}/migrate:${TAG}
+    restart: "no"
+    environment:
+      GOOSE_DBSTRING: postgres://catalift:${POSTGRES_PASSWORD}@postgres:5432/catalift?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *logging
+
+  api:
+    image: ${REGISTRY}/server:${TAG}
+    entrypoint: ["/api"]
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      LOG_LEVEL: info
+      DATABASE_URL: postgres://catalift:${POSTGRES_PASSWORD}@postgres:5432/catalift?sslmode=disable
+      DATA_DIR: /data
+      SECURE_COOKIES: "true"
+    volumes:
+      - /mnt/data/app:/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    logging: *logging
+
+  # The worker alone holds the OpenRouter key. On a deploy it stops claiming
+  # jobs and finishes in-flight AI calls (up to 60 s); 75 s keeps docker from
+  # killing it first (eng review D16).
+  worker:
+    image: ${REGISTRY}/server:${TAG}
+    entrypoint: ["/worker"]
+    restart: unless-stopped
+    stop_grace_period: 75s
+    environment:
+      LOG_LEVEL: info
+      DATABASE_URL: postgres://catalift:${POSTGRES_PASSWORD}@postgres:5432/catalift?sslmode=disable
+      DATA_DIR: /data
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    volumes:
+      - /mnt/data/app:/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    logging: *logging
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?run deploy.sh, it writes .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # The whole web folder, so switching the current link takes effect
+      # without restarting Caddy.
+      - /mnt/data/web:/srv/web:ro
+      - /mnt/data/caddy/data:/data
+      - /mnt/data/caddy/config:/config
+    depends_on:
+      - api
+    logging: *logging

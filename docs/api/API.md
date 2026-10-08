@@ -1,4 +1,4 @@
-# API: Catalift API v1.1.0
+# API: Catalift API v1.7.0
 
 Generated from `api/openapi.yaml` by openapi-spec (scripts/api_doc.py). Edit the spec, not this file.
 
@@ -74,7 +74,7 @@ Serves US-00-003.
 | Method | Path | Does | Auth | Success | Errors |
 | --- | --- | --- | --- | --- | --- |
 | GET | `/brands` | List brands with their voice notes | sessionCookie | 200 One page of brands, by name | 400 validation_failed, 401 unauthorized, 429 rate_limited, 500 internal |
-| PATCH | `/brands/{brand_id}` | Set a brand's voice note | sessionCookie | 200 The updated brand | 400 validation_failed, 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 404 not_found, 422 unprocessable, 422 voice_note_required, 422 budget_blocked, 422 listing_not_generated, 422 no_approved_listings, 500 internal |
+| PATCH | `/brands/{brand_id}` | Set a brand's voice (seller) | sessionCookie | 200 The updated brand | 400 validation_failed, 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 404 not_found, 422 unprocessable, 422 voice_note_required, 422 budget_blocked, 422 listing_not_generated, 422 no_approved_listings, 500 internal |
 
 Idempotency:
 
@@ -89,28 +89,43 @@ Serves US-00-001, US-00-011.
 | Method | Path | Does | Auth | Success | Errors |
 | --- | --- | --- | --- | --- | --- |
 | POST | `/uploads` | Upload a product CSV | sessionCookie | 201 Upload summary | 400 validation_failed, 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 409 idempotency_conflict, 409 version_conflict, 413 payload_too_large, 415 unsupported_media_type, 422 unprocessable, 422 voice_note_required, 422 budget_blocked, 422 listing_not_generated, 422 no_approved_listings, 500 internal |
+| GET | `/uploads/latest` | Get the newest upload's summary | sessionCookie | 200 The newest upload's summary | 401 unauthorized, 404 not_found, 500 internal |
 | GET | `/uploads/{upload_id}` | Get an upload's summary | sessionCookie | 200 The upload summary with its rejected rows and AI cost total | 401 unauthorized, 404 not_found, 500 internal |
 | POST | `/uploads/{upload_id}/images` | Upload images for an upload's products | sessionCookie | 201 Images attached | 400 validation_failed, 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 404 not_found, 409 idempotency_conflict, 409 version_conflict, 413 payload_too_large, 415 unsupported_media_type, 500 internal |
+| GET | `/row-errors` | Rejected CSV rows not yet fixed | sessionCookie | 200 The open rejected rows | 400 validation_failed, 401 unauthorized, 500 internal |
+| DELETE | `/row-errors` | Discard every rejected row (seller) | sessionCookie | 200 How many rows were discarded | 400 validation_failed, 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 500 internal |
+| PUT | `/uploads/{upload_id}/rows/{row_number}` | Correct a rejected row and send it again (seller) | sessionCookie | 200 Loaded, or rejected again with the reason | 400 validation_failed, 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 404 not_found, 500 internal |
+| DELETE | `/uploads/{upload_id}/rows/{row_number}` | Discard one rejected row (seller) | sessionCookie | 204 Discarded | 400 validation_failed, 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 404 not_found, 500 internal |
 
 Idempotency:
 
 - `POST /uploads`: Idempotency-Key required. Client UUID. Same key and body replays the first result for 24 hours; same key and a different body is 409 idempotency_conflict.
 - `POST /uploads/{upload_id}/images`: Idempotency-Key required. Client UUID. Same key and body replays the first result for 24 hours; same key and a different body is 409 idempotency_conflict.
+- `DELETE /row-errors`: idempotent by definition; a retry has the same effect.
+- `PUT /uploads/{upload_id}/rows/{row_number}`: idempotent by definition; a retry has the same effect.
+- `DELETE /uploads/{upload_id}/rows/{row_number}`: idempotent by definition; a retry has the same effect.
 
 ## products
 
 Products, their detected attributes and their AI cost (US-00-001, US-00-002, US-00-007, US-00-011).
 
-Serves US-00-001, US-00-002, US-00-011, US-00-007.
+Serves US-00-001, US-00-002, US-00-011, US-00-003, US-00-007.
 
 | Method | Path | Does | Auth | Success | Errors |
 | --- | --- | --- | --- | --- | --- |
 | GET | `/products` | List products with detection status and AI cost | sessionCookie | 200 One page of products, by SKU | 400 validation_failed, 401 unauthorized, 429 rate_limited, 500 internal |
 | GET | `/products/{product_id}` | Get one product | sessionCookie | 200 The product with its attributes, images and AI cost | 401 unauthorized, 404 not_found, 500 internal |
+| PATCH | `/products/{product_id}` | Correct a product's details (seller) | sessionCookie | 200 Saved, or refused with the reason | 400 validation_failed, 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 404 not_found, 422 unprocessable, 422 voice_note_required, 422 budget_blocked, 422 listing_not_generated, 422 no_approved_listings, 500 internal |
+| POST | `/products/{product_id}/enrich` | Run the vision call again for one product (seller) | sessionCookie | 201 The run that tracks the call | 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 404 not_found, 422 unprocessable, 422 voice_note_required, 422 budget_blocked, 422 listing_not_generated, 422 no_approved_listings, 500 internal |
+| GET | `/products/{product_id}/image` | Get a product's thumbnail | sessionCookie | 200 The thumbnail | 401 unauthorized, 404 not_found, 500 internal |
+| POST | `/products/{product_id}/images` | Add photos to one product (seller) | sessionCookie | 201 The photos attached and those refused | 400 validation_failed, 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 404 not_found, 413 payload_too_large, 500 internal |
 | PATCH | `/products/{product_id}/attributes` | Correct detected attributes (reviewer) | sessionCookie | 200 The corrected attributes | 400 validation_failed, 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 404 not_found, 409 idempotency_conflict, 409 version_conflict, 422 unprocessable, 422 voice_note_required, 422 budget_blocked, 422 listing_not_generated, 422 no_approved_listings, 500 internal |
 
 Idempotency:
 
+- `PATCH /products/{product_id}`: documented idempotent (x-idempotent).
+- `POST /products/{product_id}/enrich`: Idempotency-Key required. Client UUID. Same key and body replays the first result for 24 hours; same key and a different body is 409 idempotency_conflict.
+- `POST /products/{product_id}/images`: Idempotency-Key required. Client UUID. Same key and body replays the first result for 24 hours; same key and a different body is 409 idempotency_conflict.
 - `PATCH /products/{product_id}/attributes`: documented idempotent (x-idempotent).
 
 ## generation
@@ -144,12 +159,14 @@ Serves US-00-004, US-00-007, US-00-009, US-00-008.
 | GET | `/listings/{listing_id}/regeneration-requests` | A listing's regeneration requests | sessionCookie | 200 One page of requests, newest first | 400 validation_failed, 401 unauthorized, 404 not_found, 500 internal |
 | POST | `/listings/{listing_id}/regeneration-requests` | Regenerate one field with an instruction (reviewer) | sessionCookie | 201 The queued request | 400 validation_failed, 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 404 not_found, 409 idempotency_conflict, 409 version_conflict, 422 unprocessable, 422 voice_note_required, 422 budget_blocked, 422 listing_not_generated, 422 no_approved_listings, 500 internal |
 | POST | `/approvals` | Approve many listings (reviewer) | sessionCookie | 201 Approved and skipped listings | 400 validation_failed, 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 409 idempotency_conflict, 409 version_conflict, 500 internal |
+| POST | `/rule-checks` | Check draft listing text against its channel's rules (reviewer) | sessionCookie | 200 The rules' verdict on the draft | 400 validation_failed, 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 404 not_found, 500 internal |
 
 Idempotency:
 
 - `PATCH /listings/{listing_id}`: documented idempotent (x-idempotent).
 - `POST /listings/{listing_id}/regeneration-requests`: Idempotency-Key required. Client UUID. Same key and body replays the first result for 24 hours; same key and a different body is 409 idempotency_conflict.
 - `POST /approvals`: Idempotency-Key required. Client UUID. Same key and body replays the first result for 24 hours; same key and a different body is 409 idempotency_conflict.
+- `POST /rule-checks`: not idempotent; a retry repeats the action.
 
 ## channels
 
@@ -160,6 +177,11 @@ Serves US-00-005, US-00-006, US-00-004.
 | Method | Path | Does | Auth | Success | Errors |
 | --- | --- | --- | --- | --- | --- |
 | GET | `/channels` | Configured channels, their rules and the last re-check | sessionCookie | 200 One page of channels | 400 validation_failed, 401 unauthorized, 500 internal |
+| PATCH | `/channels/{channel}` | Change a channel's rules (reviewer) | sessionCookie | 200 The re-check the change caused | 400 validation_failed, 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 404 not_found, 409 idempotency_conflict, 409 version_conflict, 422 unprocessable, 422 voice_note_required, 422 budget_blocked, 422 listing_not_generated, 422 no_approved_listings, 500 internal |
+
+Idempotency:
+
+- `PATCH /channels/{channel}`: documented idempotent (x-idempotent).
 
 ## exports
 
@@ -169,13 +191,16 @@ Serves US-00-010.
 
 | Method | Path | Does | Auth | Success | Errors |
 | --- | --- | --- | --- | --- | --- |
+| GET | `/exports` | List exports, newest first | sessionCookie | 200 One page of exports | 400 validation_failed, 401 unauthorized, 500 internal |
 | POST | `/exports` | Export approved listings (reviewer) | sessionCookie | 201 The export and its files | 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 409 idempotency_conflict, 409 version_conflict, 422 unprocessable, 422 voice_note_required, 422 budget_blocked, 422 listing_not_generated, 422 no_approved_listings, 500 internal |
 | GET | `/exports/{export_id}` | Get an export and its files | sessionCookie | 200 The export | 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 404 not_found, 500 internal |
-| GET | `/exports/{export_id}/files/{channel}` | Download one channel's CSV (reviewer) | sessionCookie | 200 The CSV file | 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 404 not_found, 500 internal |
+| POST | `/exports/{export_id}/send` | Send an export to the seller (reviewer) | sessionCookie | 200 The sent export | 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 404 not_found, 500 internal |
+| GET | `/exports/{export_id}/files/{channel}` | Download one channel's CSV | sessionCookie | 200 The CSV file | 401 unauthorized, 403 forbidden_role, 403 csrf_failed, 404 not_found, 500 internal |
 
 Idempotency:
 
 - `POST /exports`: Idempotency-Key required. Client UUID. Same key and body replays the first result for 24 hours; same key and a different body is 409 idempotency_conflict.
+- `POST /exports/{export_id}/send`: not idempotent; a retry repeats the action.
 
 ## budget
 

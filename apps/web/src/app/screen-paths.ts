@@ -5,4 +5,6 @@ export const SCREEN_PATH: Record<string, string> = {
   "S-05": "/review",
   "S-06": "/export",
   "S-07": "/channels",
+  "S-08": "/brands",
+  "S-09": "/received",
 };

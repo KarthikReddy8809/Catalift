@@ -33,6 +33,8 @@ var (
 	chanRe  = regexp.MustCompile(`for the (.+?) channel`)
 	limitRe = regexp.MustCompile(`at most (\d+) characters`)
 	instrRe = regexp.MustCompile(`Reviewer's instruction: (.+)`)
+	catRe   = regexp.MustCompile(`category (.+?), brand (.+?)\.`)
+	enrChRe = regexp.MustCompile(`- Channel (\S+) \((.+?)\): the title is at most (\d+) characters`)
 )
 
 // Complete answers in the same JSON shapes a real model is asked for.
@@ -43,7 +45,11 @@ func (Local) Complete(ctx context.Context, req Request) (Response, error) {
 	var out any
 	switch req.Purpose {
 	case PurposeDetect, PurposeEvalDetect:
-		out = localDetect(req)
+		if req.TemplateID == TemplateEnrich {
+			out = localEnrich(req)
+		} else {
+			out = localDetect(req)
+		}
 	case PurposeGenerate:
 		out = localGenerate(req.Prompt)
 	case PurposeRegenerate:
@@ -127,9 +133,9 @@ func dominantColour(img image.Image) string {
 }
 
 func localGenerate(prompt string) map[string]any {
-	a := []string{"unknown", "unknown", "unknown", "unknown", "unknown"}
+	a := Attributes{Colour: "unknown", Pattern: "unknown", Sleeve: "unknown", Neckline: "unknown", Fit: "unknown"}
 	if m := attrsRe.FindStringSubmatch(prompt); m != nil {
-		a = m[1:6]
+		a = Attributes{Colour: m[1], Pattern: m[2], Sleeve: m[3], Neckline: m[4], Fit: m[5]}
 	}
 	category, brand := "garment", "the brand"
 	if m := brandRe.FindStringSubmatch(prompt); m != nil {
@@ -139,17 +145,47 @@ func localGenerate(prompt string) map[string]any {
 	if m := chanRe.FindStringSubmatch(prompt); m != nil {
 		channel = m[1]
 	}
-	colour, pattern, sleeve, neck, fit := a[0], a[1], a[2], a[3], a[4]
+	limit := 0
+	if m := limitRe.FindStringSubmatch(prompt); m != nil {
+		_, _ = fmt.Sscanf(m[1], "%d", &limit) // the regexp guarantees digits
+	}
+	return localListing(a, category, brand, channel, limit)
+}
+
+// localEnrich answers EnrichPrompt: the photo's colour, picked attributes, a
+// confidence, and a listing per channel named in the prompt.
+func localEnrich(req Request) map[string]any {
+	a := localDetect(req)
+	category, brand := "garment", "the brand"
+	if m := catRe.FindStringSubmatch(req.Prompt); m != nil {
+		category, brand = m[1], m[2]
+	}
+	sku := ""
+	if m := skuRe.FindStringSubmatch(req.Prompt); m != nil {
+		sku = strings.TrimSuffix(m[1], ",")
+	}
+	// Mostly sure; some products low, so the reviewer's triage filter has work.
+	confidence := map[string]float64{"a": 0.94, "b": 0.88, "c": 0.81, "d": 0.42}[pick(sku+"c", []string{"a", "a", "b", "c", "d"})]
+	if a.Colour == "unknown" {
+		confidence = 0.3
+	}
+	listings := map[string]any{}
+	for _, m := range enrChRe.FindAllStringSubmatch(req.Prompt, -1) {
+		var limit int
+		_, _ = fmt.Sscanf(m[3], "%d", &limit) // the regexp guarantees digits
+		listings[m[1]] = localListing(a, category, brand, m[2], limit)
+	}
+	return map[string]any{"attributes": a, "confidence": confidence, "listings": listings}
+}
+
+func localListing(a Attributes, category, brand, channel string, limit int) map[string]any {
+	colour, pattern, sleeve, neck, fit := a.Colour, a.Pattern, a.Sleeve, a.Neckline, a.Fit
 	title := fmt.Sprintf("%s %s %s %s, %s fit, %s", titleCase(brand), titleCase(colour), titleCase(pattern), titleCase(category), titleCase(fit), titleCase(sleeve))
 	if channel == "Own website" {
 		title = fmt.Sprintf("%s %s %s", titleCase(colour), titleCase(pattern), titleCase(category))
 	}
-	if m := limitRe.FindStringSubmatch(prompt); m != nil {
-		var limit int
-		_, _ = fmt.Sscanf(m[1], "%d", &limit) // the regexp guarantees digits
-		if limit > 0 && len([]rune(title)) > limit {
-			title = string([]rune(title)[:limit])
-		}
+	if limit > 0 && len([]rune(title)) > limit {
+		title = string([]rune(title)[:limit])
 	}
 	return map[string]any{
 		"title": title,

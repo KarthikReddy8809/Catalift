@@ -13,6 +13,8 @@ type Listing struct {
 	Bullets     [5]string
 	Description string
 	Attributes  map[string]string
+	// AvoidWords are the brand's words to avoid (brand voice settings).
+	AvoidWords []string
 }
 
 // Failure is one broken rule, shown to the reviewer as is (REQ-009).
@@ -24,7 +26,7 @@ type Failure struct {
 
 // Validate is the code-based rules engine (REQ-008): pure, deterministic, no
 // AI. The order of failures is fixed: empty fields, title length, banned
-// words by field, required attributes.
+// words by field, the brand's words to avoid by field, required attributes.
 func Validate(c Channel, l Listing) []Failure {
 	failures := []Failure{}
 	fields := l.fields()
@@ -48,6 +50,17 @@ func Validate(c Channel, l Listing) []Failure {
 				failures = append(failures, Failure{
 					Rule: "banned_word", Field: f.name,
 					Message: fmt.Sprintf("%s uses the banned phrase %q.", fieldLabel(f.name), word),
+				})
+			}
+		}
+	}
+
+	for _, f := range fields {
+		for _, word := range l.AvoidWords {
+			if containsWord(f.text, word) {
+				failures = append(failures, Failure{
+					Rule: "brand_avoid_word", Field: f.name,
+					Message: fmt.Sprintf("%s uses %q, a word the brand avoids.", fieldLabel(f.name), word),
 				})
 			}
 		}

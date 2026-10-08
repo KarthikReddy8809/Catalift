@@ -2,3 +2,6 @@
 # Non-secret values only. A secret never goes in a tfvars file.
 project = "my-gcp-project-prod"
 region  = "asia-south1"
+zone    = "asia-south1-a"
+# domain = "catalift.example.com"   # empty serves https://<ip>.sslip.io
+# ci_service_account = "catalift-ci@my-gcp-project-prod.iam.gserviceaccount.com"

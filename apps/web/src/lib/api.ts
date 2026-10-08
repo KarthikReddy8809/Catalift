@@ -136,7 +136,7 @@ export function setCsrfToken(token: string): void {
 }
 
 interface SendOptions {
-  method: "POST" | "PATCH" | "DELETE";
+  method: "POST" | "PUT" | "PATCH" | "DELETE";
   /** A JSON body, or FormData for a file upload. */
   body?: unknown;
   /** Creates send an Idempotency-Key so a retried click is not done twice. */

@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { apiSend } from "@/lib/api";
 import { fetchAllPages } from "@/lib/paged";
+import { uploadQuery } from "@/lib/upload-filter";
 
 import type { ListingChanges, ListingField } from "./components/ReviewGridView";
 
@@ -38,10 +39,12 @@ export type Listing = z.infer<typeof listingSchema>;
 
 export const listingKeys = { all: ["listings"] as const };
 
-export function listingsQueryOptions() {
+/** listingsQueryOptions: the review grid for one upload, or every upload without an id. */
+export function listingsQueryOptions(uploadId?: string) {
   return queryOptions({
-    queryKey: listingKeys.all,
-    queryFn: ({ signal }) => fetchAllPages("/v1/listings", listingSchema, signal, 30),
+    queryKey: [...listingKeys.all, uploadId ?? "all"] as const,
+    queryFn: ({ signal }) =>
+      fetchAllPages(uploadQuery("/v1/listings", uploadId), listingSchema, signal, 30),
     // While a regeneration is being written the grid follows it.
     refetchInterval: (q) =>
       q.state.data?.some((l) => l.latest_regeneration?.status === "queued") ? 2_000 : false,
@@ -94,4 +97,19 @@ export async function approve(
     out.skipped.push(...res.skipped);
   }
   return out;
+}
+
+export const ruleCheckSchema = z.object({
+  rule_status: z.enum(["passing", "failing"]),
+  rule_failures: z.array(z.object({ rule: z.string(), field: z.string(), message: z.string() })),
+});
+
+export type RuleCheck = z.infer<typeof ruleCheckSchema>;
+
+/** checkDraft runs the rules on unsaved text (POST /v1/rule-checks); nothing is stored. */
+export function checkDraft(id: string, changes: ListingChanges): Promise<RuleCheck> {
+  return apiSend("/v1/rule-checks", ruleCheckSchema, {
+    method: "POST",
+    body: { listing_id: id, ...changes },
+  });
 }

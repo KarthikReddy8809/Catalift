@@ -16,7 +16,9 @@ import (
 // Estimates reserved before a call, in micro-USD (Q-018 estimate). The
 // reservation counts toward spend until the call is finalised.
 var estimate = map[Purpose]int64{
-	PurposeDetect:     4_200,
+	// The vision call now also writes every channel's listing (enrich-v1),
+	// so its answer is several times longer than detection alone.
+	PurposeDetect:     9_000,
 	PurposeGenerate:   5_000,
 	PurposeRegenerate: 1_100,
 	PurposeEvalDetect: 4_200,

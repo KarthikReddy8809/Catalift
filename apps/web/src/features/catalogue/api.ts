@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { apiFetch, apiSend } from "@/lib/api";
 import { fetchAllPages } from "@/lib/paged";
+import { uploadQuery } from "@/lib/upload-filter";
 
 const detectionStatus = z.enum(["pending", "done", "failed", "stopped_budget"]);
 
@@ -32,12 +33,30 @@ export type ImagesResult = z.infer<typeof imagesResultSchema>;
 
 export const productSchema = z.object({
   id: z.string(),
+  // v1.6; optional so an older API still lists products.
+  upload_id: z.string().optional(),
   sku: z.string(),
   brand: z.object({ id: z.string(), name: z.string() }),
   category: z.string(),
   price_minor: z.number(),
   currency: z.string(),
   image_count: z.number(),
+  // Optional so an API one release behind still lists products; the page
+  // then derives the status from detection.
+  status: z
+    .enum([
+      "needs_photo",
+      "uploaded",
+      "enriching",
+      "ready_for_review",
+      "approved",
+      "failed",
+      "budget_exhausted",
+    ])
+    .optional(),
+  listings: z
+    .object({ total: z.number(), failing_rules: z.number(), approved: z.number() })
+    .optional(),
   attributes: z.object({
     detection_status: detectionStatus,
     revision: z.number(),
@@ -47,6 +66,7 @@ export const productSchema = z.object({
     neckline: z.string().nullable(),
     fit: z.string().nullable(),
     detection_error: z.string().nullable(),
+    confidence: z.number().nullable().optional(),
   }),
   ai_cost_micro_usd: z.number(),
   created_at: z.string(),
@@ -77,7 +97,9 @@ export const catalogueKeys = {
   upload: (id: string) => [...catalogueKeys.all, "upload", id] as const,
   products: (uploadId: string | undefined) =>
     [...catalogueKeys.all, "products", uploadId ?? "all"] as const,
-  brandsWithoutVoice: () => [...catalogueKeys.all, "brands-without-voice"] as const,
+  brandsWithoutVoice: (uploadId?: string) =>
+    [...catalogueKeys.all, "brands-without-voice", uploadId ?? "all"] as const,
+  latestUpload: () => [...catalogueKeys.all, "latest-upload"] as const,
   run: (id: string) => [...catalogueKeys.all, "run", id] as const,
 };
 
@@ -107,11 +129,11 @@ const brandSchema = z.object({
 });
 
 /** Brands with no voice note, so the run's neutral-voice question is asked up front. */
-export function brandsWithoutVoiceQueryOptions() {
+export function brandsWithoutVoiceQueryOptions(uploadId?: string) {
   return queryOptions({
-    queryKey: catalogueKeys.brandsWithoutVoice(),
+    queryKey: catalogueKeys.brandsWithoutVoice(uploadId),
     queryFn: async ({ signal }) =>
-      (await fetchAllPages("/v1/brands", brandSchema, signal))
+      (await fetchAllPages(uploadQuery("/v1/brands", uploadId), brandSchema, signal))
         .filter((b) => b.voice_note === null)
         .map((b) => b.name),
   });
@@ -169,4 +191,101 @@ export function startRun(neutral: boolean, uploadId: string | undefined): Promis
 
 export function resumeRun(id: string): Promise<Run> {
   return apiSend(`/v1/generation-runs/${id}/resume`, runSchema, { method: "POST" });
+}
+
+export const rowErrorSchema = z.object({
+  upload_id: z.string(),
+  file_name: z.string(),
+  row_number: z.number(),
+  sku: z.string().nullable(),
+  reason: z.string(),
+  category: z.string().nullable(),
+  brand: z.string().nullable(),
+  price: z.string().nullable(),
+});
+
+export type RowErrorItem = z.infer<typeof rowErrorSchema>;
+
+const rowErrorsSchema = z.object({
+  data: z.array(rowErrorSchema),
+  categories: z.array(z.string()),
+});
+
+/** Rejected CSV rows not yet fixed, and the categories a fix may use. */
+export function rowErrorsQueryOptions(uploadId: string | undefined) {
+  return queryOptions({
+    queryKey: [...catalogueKeys.all, "row-errors", uploadId ?? "all"] as const,
+    queryFn: ({ signal }) =>
+      apiFetch(
+        uploadId ? `/v1/row-errors?filter[upload_id]=${uploadId}` : "/v1/row-errors",
+        rowErrorsSchema,
+        { signal },
+      ),
+  });
+}
+
+export const rowFixSchema = z.object({
+  status: z.enum(["loaded", "rejected"]),
+  reason: z.string().nullable(),
+  product_id: z.string().nullable(),
+});
+
+export interface RowValues {
+  sku: string;
+  category: string;
+  brand: string;
+  price: string;
+}
+
+/** fixRow sends a corrected rejected row; it is loaded, or refused with a new reason. */
+export function fixRow(uploadId: string, rowNumber: number, values: RowValues) {
+  return apiSend(`/v1/uploads/${uploadId}/rows/${String(rowNumber)}`, rowFixSchema, {
+    method: "PUT",
+    body: values,
+  });
+}
+
+/** uploadProductPhotos adds photos to one product, whatever the files are called. */
+export function uploadProductPhotos(productId: string, files: File[]): Promise<ImagesResult> {
+  const body = new FormData();
+  for (const f of files) body.append("files", f);
+  return apiSend(`/v1/products/${productId}/images`, imagesResultSchema, {
+    method: "POST",
+    body,
+    idempotent: true,
+  });
+}
+
+const productSaveSchema = z.object({
+  status: z.enum(["saved", "rejected"]),
+  reason: z.string().nullable(),
+});
+
+/** updateProduct corrects a loaded product's fields; a refused change says why. */
+export function updateProduct(productId: string, values: RowValues) {
+  return apiSend(`/v1/products/${productId}`, productSaveSchema, { method: "PATCH", body: values });
+}
+
+/** enrichProduct runs the one vision call again for this product only. */
+export function enrichProduct(productId: string): Promise<Run> {
+  return apiSend(`/v1/products/${productId}/enrich`, runSchema, {
+    method: "POST",
+    idempotent: true,
+  });
+}
+
+/** discardRow drops one rejected row the seller does not want to load. */
+export function discardRow(uploadId: string, rowNumber: number) {
+  return apiSend(`/v1/uploads/${uploadId}/rows/${String(rowNumber)}`, z.undefined(), {
+    method: "DELETE",
+  });
+}
+
+/** discardRows drops every open rejected row, or one upload's. */
+export function discardRows(uploadId: string | undefined) {
+  return apiSend(
+    uploadId ? `/v1/row-errors?filter[upload_id]=${uploadId}` : "/v1/row-errors",
+    z.object({ discarded: z.number() }),
+    { method: "DELETE" },
+  );
 }

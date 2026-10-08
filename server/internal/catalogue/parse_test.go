@@ -76,3 +76,23 @@ func TestParseCSVRejectsWrongHeader(t *testing.T) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+func TestValidateRowNamesTheFirstProblem(t *testing.T) {
+	cases := []struct{ sku, category, brand, price, want string }{
+		{"", "kurta", "B", "10", "sku is missing"},
+		{"A B", "kurta", "B", "10", "sku must have no spaces"},
+		{"A-1", "", "B", "10", "category is missing"},
+		{"A-1", "kurta", "", "10", "brand is missing"},
+		{"A-1", "kurta", "B", "abc", "price must be"},
+		{"A-1", "kurta", "B", "₹1,299.50", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.sku+c.price, func(t *testing.T) {
+			_, got := ValidateRow(2, c.sku, c.category, c.brand, c.price)
+
+			if (c.want == "") != (got == "") || !strings.HasPrefix(got, c.want) {
+				t.Fatalf("got %q, want prefix %q", got, c.want)
+			}
+		})
+	}
+}

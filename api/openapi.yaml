@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Catalift API
-  version: 1.1.0
+  version: 1.7.0
   description: |
     The REST API the Catalift web app uses: sellers upload products and start generation, reviewers edit,
     regenerate, approve and export listings, and both see AI cost and the budget state (ADR-0007).
@@ -134,12 +134,14 @@ paths:
     get:
       operationId: listBrands
       summary: List brands with their voice notes
+      description: With filter[upload_id], only brands named by that upload's products (v1.7).
       tags: [brands]
       x-story-ids: [US-00-003]
       parameters:
         - $ref: '#/components/parameters/ApiVersion'
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/UploadFilter'
       responses:
         '200':
           description: One page of brands, by name
@@ -157,8 +159,12 @@ paths:
       - $ref: '#/components/parameters/BrandId'
     patch:
       operationId: updateBrand
-      summary: Set a brand's voice note
-      description: Replaces the voice note; sending the same note twice leaves the same state.
+      summary: Set a brand's voice (seller)
+      description: >-
+        Replaces the tone (voice_note) and, when given, the words to avoid; sending the same values twice leaves the
+        same state. Words are trimmed, blanks and repeats (ignoring case) dropped; at most 50, each at most 60
+        characters. A new list re-checks the brand's listings: a word to avoid in one is a brand_avoid_word failure,
+        and an approved listing that now fails loses its approval (v1.6, ADR-0012).
       tags: [brands]
       x-story-ids: [US-00-003]
       x-idempotent: true
@@ -170,7 +176,7 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/BrandUpdate' }
-            example: { voice_note: Warm and plain-spoken; no slang; mention fabric first. }
+            example: { voice_note: Warm and plain-spoken; no slang; mention fabric first., words_to_avoid: [cheap, best ever] }
       responses:
         '200':
           description: The updated brand
@@ -219,6 +225,26 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /uploads/latest:
+    get:
+      operationId: getLatestUpload
+      summary: Get the newest upload's summary
+      description: >-
+        The screens show only the newest upload's records; older uploads stay in the database. 404 before any upload
+        (v1.7).
+      tags: [uploads]
+      x-story-ids: [US-00-001]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: The newest upload's summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Upload' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
   /uploads/{upload_id}:
     parameters:
@@ -320,6 +346,216 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Product' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    patch:
+      operationId: updateProduct
+      summary: Correct a product's details (seller)
+      description: >-
+        Re-checks SKU, category, brand and price with the upload's rules and saves them, or says why not (v1.5). A
+        product whose listings a reviewer approved can no longer change (422).
+      tags: [products]
+      x-story-ids: [US-00-001]
+      x-idempotent: true
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RowFix' }
+      responses:
+        '200':
+          description: Saved, or refused with the reason
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductSaveResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /products/{product_id}/enrich:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    post:
+      operationId: enrichProduct
+      summary: Run the vision call again for one product (seller)
+      description: >-
+        Resets the product's detection, queues every channel's listing again and makes one enrich-v1 vision call for
+        this product only (v1.5). It counts toward the budget; refused while the budget is blocked or the product has
+        no photo (422).
+      tags: [products]
+      x-story-ids: [US-00-002, US-00-003]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '201':
+          description: The run that tracks the call
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenerationRun' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /products/{product_id}/image:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      operationId: getProductImage
+      summary: Get a product's thumbnail
+      description: The product's first photo as its 1024 px JPEG detection copy, for the review grid (v1.2).
+      tags: [products]
+      x-story-ids: [US-00-007]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: The thumbnail
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /products/{product_id}/images:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    post:
+      operationId: createProductImages
+      summary: Add photos to one product (seller)
+      description: >-
+        Attaches the photos to this product whatever the files are called: the fix for a product left without a photo
+        (v1.4). The same type, size and pixel checks as an upload apply.
+      tags: [products]
+      x-story-ids: [US-00-001]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: '#/components/schemas/ImagesCreate' }
+      responses:
+        '201':
+          description: The photos attached and those refused
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImagesResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /row-errors:
+    get:
+      operationId: listRowErrors
+      summary: Rejected CSV rows not yet fixed
+      description: >-
+        Every row an upload refused and the seller has not corrected yet, with the values as typed and the categories a
+        correction may use (v1.4).
+      tags: [uploads]
+      x-story-ids: [US-00-001]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - name: filter[upload_id]
+          in: query
+          schema: { type: string, pattern: '^[0-9]+$' }
+      responses:
+        '200':
+          description: The open rejected rows
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RowErrorList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: discardRowErrors
+      summary: Discard every rejected row (seller)
+      description: >-
+        Drops every open rejected row, or one upload's with filter[upload_id], so the seller can clear rows they will
+        not load. Nothing else changes; discarding twice discards nothing the second time (v1.5).
+      tags: [uploads]
+      x-story-ids: [US-00-001]
+      x-idempotent: true
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/CsrfToken'
+        - name: filter[upload_id]
+          in: query
+          schema: { type: string, pattern: '^[0-9]+$' }
+      responses:
+        '200':
+          description: How many rows were discarded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DiscardResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /uploads/{upload_id}/rows/{row_number}:
+    parameters:
+      - $ref: '#/components/parameters/UploadId'
+      - name: row_number
+        in: path
+        required: true
+        schema: { type: integer, minimum: 2 }
+    put:
+      operationId: updateRow
+      summary: Correct a rejected row and send it again (seller)
+      description: >-
+        Re-checks the corrected values with the upload's rules. A valid row becomes a product of the upload and its
+        error is removed; an invalid one keeps its error with the new reason (v1.4).
+      tags: [uploads]
+      x-story-ids: [US-00-001]
+      x-idempotent: true
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RowFix' }
+      responses:
+        '200':
+          description: Loaded, or rejected again with the reason
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RowFixResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: discardRow
+      summary: Discard one rejected row (seller)
+      description: >-
+        Drops the row's error so it no longer shows as not loaded. A row with no open error is 404 not_found (v1.5).
+      tags: [uploads]
+      x-story-ids: [US-00-001]
+      x-idempotent: true
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204':
+          description: Discarded
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
   /products/{product_id}/attributes:
@@ -450,6 +686,7 @@ paths:
         - $ref: '#/components/parameters/ApiVersion'
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/UploadFilter'
         - name: filter[channel]
           in: query
           description: Only this channel (AC-US-00-007-5; sequential scan by design, under 10^4 rows).
@@ -612,6 +849,34 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/InternalError' }
+  /rule-checks:
+    post:
+      operationId: createRuleCheck
+      summary: Check draft listing text against its channel's rules (reviewer)
+      description: >-
+        Runs the rules engine on a listing with the given fields replaced, and saves nothing, so the editor's badge
+        updates as the reviewer types (v1.2). It changes no state, so it takes no Idempotency-Key.
+      tags: [listings]
+      x-story-ids: [US-00-004, US-00-007]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RuleCheckCreate' }
+      responses:
+        '200':
+          description: The rules' verdict on the draft
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RuleCheckResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
 
   /channels:
     get:
@@ -626,6 +891,7 @@ paths:
         - $ref: '#/components/parameters/ApiVersion'
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/UploadFilter'
       responses:
         '200':
           description: One page of channels
@@ -635,21 +901,94 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '500': { $ref: '#/components/responses/InternalError' }
+  /channels/{channel}:
+    parameters:
+      - name: channel
+        in: path
+        required: true
+        schema: { type: string, pattern: '^[a-z][a-z0-9_]{1,39}$' }
+    patch:
+      operationId: updateChannelRules
+      summary: Change a channel's rules (reviewer)
+      description: >-
+        Saves a reviewer's change to the title length limit, required attributes and banned words, records who made
+        it, and re-checks the channel's listings at once; an approved listing that now fails loses its approval (D7).
+        The body carries the config_hash from GET /v1/channels; a change made by someone else meanwhile is 409
+        version_conflict (v1.3).
+      tags: [channels]
+      x-story-ids: [US-00-005, US-00-004]
+      x-idempotent: true
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChannelRulesUpdate' }
+      responses:
+        '200':
+          description: The re-check the change caused
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChannelRulesResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
 
   /exports:
+    get:
+      operationId: listExports
+      summary: List exports, newest first
+      description: >-
+        A reviewer sees every export, or only sent ones with filter[sent]=true. A seller always sees only the exports
+        a reviewer sent them (v1.6, ADR-0012).
+      tags: [exports]
+      x-story-ids: [US-00-010]
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/UploadFilter'
+        - name: filter[sent]
+          in: query
+          schema: { type: string, enum: ['true'] }
+      responses:
+        '200':
+          description: One page of exports
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExportPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
     post:
       operationId: createExport
       summary: Export approved listings (reviewer)
       description: >-
         Writes one CSV per channel holding only listings approved at their current version, with headers from the
         channel's configuration and cells starting with =, +, - or @ escaped. A channel with no approved listings
-        gets no file and is listed in skipped_channels (AC-US-00-010-5).
+        gets no file and is listed in skipped_channels (AC-US-00-010-5). With a body naming upload_id, only that
+        upload's listings are exported; without a body, every upload's (v1.7).
       tags: [exports]
       x-story-ids: [US-00-010]
       parameters:
         - $ref: '#/components/parameters/ApiVersion'
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                upload_id: { type: string, pattern: '^[0-9]+$' }
+            example: { upload_id: '12' }
       responses:
         '201':
           description: The export and its files
@@ -669,6 +1008,7 @@ paths:
     get:
       operationId: getExport
       summary: Get an export and its files
+      description: A seller gets 404 for an export not yet sent to them (v1.6).
       tags: [exports]
       x-story-ids: [US-00-010]
       parameters:
@@ -676,6 +1016,31 @@ paths:
       responses:
         '200':
           description: The export
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Export' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /exports/{export_id}/send:
+    parameters:
+      - $ref: '#/components/parameters/ExportId'
+    post:
+      operationId: sendExport
+      summary: Send an export to the seller (reviewer)
+      description: >-
+        Marks the export as sent, with who sent it and when, so it appears in the seller's received exports and the
+        seller can download its files. Sending again changes nothing and returns the first send (v1.6, ADR-0012).
+      tags: [exports]
+      x-story-ids: [US-00-010]
+      x-idempotent: true
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: The sent export
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Export' }
@@ -692,7 +1057,8 @@ paths:
         schema: { type: string, pattern: '^[a-z][a-z0-9_]{1,39}$' }
     get:
       operationId: getExportFile
-      summary: Download one channel's CSV (reviewer)
+      summary: Download one channel's CSV
+      description: Reviewers download any export; a seller only one sent to them, otherwise 404 (v1.6).
       tags: [exports]
       x-story-ids: [US-00-010]
       parameters:
@@ -792,6 +1158,11 @@ components:
       name: upload_id
       in: path
       required: true
+      schema: { type: string, pattern: '^[0-9]+$' }
+    UploadFilter:
+      name: filter[upload_id]
+      in: query
+      description: Only this upload's records; the screens pass the latest upload (v1.7).
       schema: { type: string, pattern: '^[0-9]+$' }
     ProductId:
       name: product_id
@@ -912,17 +1283,19 @@ components:
         expires_at: 2026-10-11T09:00:00Z
     Brand:
       type: object
-      required: [id, name, voice_note, created_at, updated_at]
+      required: [id, name, voice_note, words_to_avoid, created_at, updated_at]
       properties:
         id: { type: string }
         name: { type: string }
-        voice_note: { type: [string, 'null'], maxLength: 2000 }
+        voice_note: { type: [string, 'null'], maxLength: 2000, description: The brand's tone. }
+        words_to_avoid: { type: array, maxItems: 50, items: { type: string, maxLength: 60 } }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
       example:
         id: '3'
         name: Indigo Loom
         voice_note: Warm and plain-spoken; no slang; mention fabric first.
+        words_to_avoid: [cheap, best ever]
         created_at: 2026-10-04T08:00:00Z
         updated_at: 2026-10-04T08:20:00Z
     BrandPage:
@@ -933,14 +1306,19 @@ components:
         page: { $ref: '#/components/schemas/Page' }
       example:
         data:
-          - { id: '3', name: Indigo Loom, voice_note: null, created_at: 2026-10-04T08:00:00Z, updated_at: 2026-10-04T08:00:00Z }
+          - { id: '3', name: Indigo Loom, voice_note: null, words_to_avoid: [], created_at: 2026-10-04T08:00:00Z, updated_at: 2026-10-04T08:00:00Z }
         page: { next_cursor: null, has_more: false }
     BrandUpdate:
       type: object
       required: [voice_note]
       properties:
-        voice_note: { type: [string, 'null'], minLength: 1, maxLength: 2000 }
-      example: { voice_note: Warm and plain-spoken; no slang; mention fabric first. }
+        voice_note: { type: [string, 'null'], minLength: 1, maxLength: 2000, description: The brand's tone. }
+        words_to_avoid:
+          type: array
+          maxItems: 50
+          items: { type: string, maxLength: 60 }
+          description: Omit to keep the stored list.
+      example: { voice_note: Warm and plain-spoken; no slang; mention fabric first., words_to_avoid: [cheap] }
     UploadCreate:
       type: object
       required: [file]
@@ -1030,8 +1408,14 @@ components:
         neckline: { type: [string, 'null'] }
         fit: { type: [string, 'null'] }
         detection_error: { type: [string, 'null'] }
+        confidence:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+          description: The model's 0 to 1 confidence in the attributes; null before enrichment or after a reviewer's correction (v1.2).
       example:
         detection_status: done
+        confidence: 0.88
         revision: 2
         colour: black
         pattern: solid
@@ -1053,9 +1437,24 @@ components:
       example: { revision: 1, colour: black }
     Product:
       type: object
-      required: [id, sku, brand, category, price_minor, currency, image_count, attributes, ai_cost_micro_usd, created_at]
+      required: [id, upload_id, sku, brand, category, price_minor, currency, image_count, status, listings, attributes, ai_cost_micro_usd, created_at]
       properties:
         id: { type: string }
+        upload_id: { type: string, description: 'The upload that created the product; the products page lists the newest upload first (v1.6).' }
+        status:
+          type: string
+          enum: [needs_photo, uploaded, enriching, ready_for_review, approved, failed, budget_exhausted]
+          description: >-
+            Where the product is in the flow, derived on read (v1.2). budget_exhausted means the AI budget stopped its
+            enrichment; it wins over failed so the seller sees the cause they can act on.
+        listings:
+          type: object
+          required: [total, failing_rules, approved]
+          description: Counts over the product's listings, one per channel (v1.2).
+          properties:
+            total: { type: integer, minimum: 0 }
+            failing_rules: { type: integer, minimum: 0 }
+            approved: { type: integer, minimum: 0 }
         sku: { type: string }
         brand: { type: object, required: [id, name], properties: { id: { type: string }, name: { type: string } } }
         category: { type: string }
@@ -1067,15 +1466,93 @@ components:
         created_at: { type: string, format: date-time }
       example:
         id: '104'
+        upload_id: '7'
         sku: KU-104
         brand: { id: '3', name: Indigo Loom }
         category: kurta
         price_minor: 149900
         currency: INR
         image_count: 2
-        attributes: { detection_status: done, revision: 1, colour: navy, pattern: solid, sleeve: three-quarter, neckline: round, fit: regular, detection_error: null }
+        status: ready_for_review
+        listings: { total: 2, failing_rules: 0, approved: 1 }
+        attributes: { detection_status: done, confidence: 0.88, revision: 1, colour: navy, pattern: solid, sleeve: three-quarter, neckline: round, fit: regular, detection_error: null }
         ai_cost_micro_usd: 14200
         created_at: 2026-10-04T08:05:00Z
+    RuleCheckCreate:
+      type: object
+      required: [listing_id]
+      properties:
+        listing_id: { type: string }
+        title: { type: string, maxLength: 500 }
+        bullet_1: { type: string, maxLength: 1000 }
+        bullet_2: { type: string, maxLength: 1000 }
+        bullet_3: { type: string, maxLength: 1000 }
+        bullet_4: { type: string, maxLength: 1000 }
+        bullet_5: { type: string, maxLength: 1000 }
+        description: { type: string, maxLength: 10000 }
+      example: { listing_id: '412', title: "Women's Navy Cotton Kurta, Regular Fit" }
+    RuleCheckResult:
+      type: object
+      required: [rule_status, rule_failures]
+      properties:
+        rule_status: { type: string, enum: [passing, failing] }
+        rule_failures: { type: array, items: { $ref: '#/components/schemas/RuleFailure' } }
+      example:
+        rule_status: failing
+        rule_failures: [{ rule: banned_word, field: bullet_1, message: 'Bullet 1 uses the banned phrase "guaranteed".' }]
+    DiscardResult:
+      type: object
+      required: [discarded]
+      properties:
+        discarded: { type: integer, minimum: 0 }
+      example: { discarded: 3 }
+    RowErrorList:
+      type: object
+      required: [data, categories]
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            required: [upload_id, file_name, row_number, sku, reason, category, brand, price]
+            properties:
+              upload_id: { type: string }
+              file_name: { type: string }
+              row_number: { type: integer }
+              sku: { type: [string, 'null'] }
+              reason: { type: string }
+              category: { type: [string, 'null'] }
+              brand: { type: [string, 'null'] }
+              price: { type: [string, 'null'] }
+        categories: { type: array, items: { type: string } }
+      example:
+        data:
+          - { upload_id: '3', file_name: spring.csv, row_number: 11, sku: RG-8005, reason: 'category "jeans" is not one Catalift handles; use one of: kurta, kurti', category: jeans, brand: Rang Ghar, price: '1499' }
+        categories: [kurta, kurti, saree]
+    RowFix:
+      type: object
+      required: [sku, category, brand, price]
+      properties:
+        sku: { type: string, maxLength: 64 }
+        category: { type: string, maxLength: 100 }
+        brand: { type: string, maxLength: 100 }
+        price: { type: string, maxLength: 100, description: 'Rupees, as typed in the CSV.' }
+      example: { sku: RG-8005, category: kurta, brand: Rang Ghar, price: '1499' }
+    ProductSaveResult:
+      type: object
+      required: [status, reason]
+      properties:
+        status: { type: string, enum: [saved, rejected] }
+        reason: { type: [string, 'null'] }
+      example: { status: saved, reason: null }
+    RowFixResult:
+      type: object
+      required: [status, reason, product_id]
+      properties:
+        status: { type: string, enum: [loaded, rejected] }
+        reason: { type: [string, 'null'] }
+        product_id: { type: [string, 'null'] }
+      example: { status: loaded, reason: null, product_id: '412' }
     ProductPage:
       type: object
       required: [data, page]
@@ -1085,14 +1562,17 @@ components:
       example:
         data:
           - id: '104'
+            upload_id: '7'
             sku: KU-104
             brand: { id: '3', name: Indigo Loom }
             category: kurta
             price_minor: 149900
             currency: INR
             image_count: 2
-            attributes: { detection_status: done, revision: 1, colour: navy, pattern: solid, sleeve: three-quarter, neckline: round, fit: regular, detection_error: null }
-            ai_cost_micro_usd: 14200
+            status: enriching
+            listings: { total: 2, failing_rules: 0, approved: 0 }
+            attributes: { detection_status: pending, confidence: null, revision: 0, colour: null, pattern: null, sleeve: null, neckline: null, fit: null, detection_error: null }
+            ai_cost_micro_usd: 0
             created_at: 2026-10-04T08:05:00Z
         page: { next_cursor: eyJza3UiOiJLVS0xMDQifQ, has_more: true }
     GenerationRunCreate:
@@ -1319,6 +1799,16 @@ components:
         title_max_length: { type: [integer, 'null'] }
         required_attributes: { type: array, items: { type: string } }
         banned_words: { type: array, items: { type: string }, description: Words and phrases the rules engine refuses (v1.1). }
+        config_hash:
+          type: [string, 'null']
+          description: Identifies the rules in force; send it back with PATCH /v1/channels/{channel} (v1.3). Null for a disabled channel.
+        last_edit:
+          type: [object, 'null']
+          description: The last change made in the app, if any; the channel file's rules apply otherwise (v1.3).
+          required: [by, at]
+          properties:
+            by: { type: string, description: Email of the reviewer. }
+            at: { type: string, format: date-time }
         listings_total: { type: integer, description: Listings on this channel (v1.1). }
         listings_approved: { type: integer, description: Listings approved at their current version; the export page shows readiness from these (v1.1). }
         export_headers: { type: array, items: { type: string } }
@@ -1342,6 +1832,25 @@ components:
         listings_approved: 296
         export_headers: [sku, item_name, bullet_point_1, bullet_point_2, bullet_point_3, bullet_point_4, bullet_point_5, product_description, color, fit_type]
         last_recheck: { config_hash: 9b1f2c, listings_rechecked: 300, approvals_cleared: 4, created_at: 2026-10-04T07:00:00Z }
+    ChannelRulesUpdate:
+      type: object
+      required: [config_hash, title_max_length, required_attributes, banned_words]
+      properties:
+        config_hash: { type: string, description: The channel's config_hash the reviewer edited. }
+        title_max_length: { type: integer, minimum: 10, maximum: 500 }
+        required_attributes:
+          type: array
+          items: { type: string, enum: [colour, pattern, sleeve, neckline, fit] }
+        banned_words: { type: array, maxItems: 200, items: { type: string, maxLength: 100 } }
+      example: { config_hash: 9b1f2c3d4e5f6a7b, title_max_length: 150, required_attributes: [colour, fit], banned_words: [best seller, guaranteed] }
+    ChannelRulesResult:
+      type: object
+      required: [channel, listings_rechecked, approvals_cleared]
+      properties:
+        channel: { type: string }
+        listings_rechecked: { type: integer, minimum: 0 }
+        approvals_cleared: { type: integer, minimum: 0 }
+      example: { channel: own_website, listings_rechecked: 300, approvals_cleared: 4 }
     ChannelPage:
       type: object
       required: [data, page]
@@ -1354,10 +1863,12 @@ components:
         page: { next_cursor: null, has_more: false }
     Export:
       type: object
-      required: [id, created_at, files, skipped_channels]
+      required: [id, created_at, files, skipped_channels, sent_at, sent_by]
       properties:
         id: { type: string }
         created_at: { type: string, format: date-time }
+        sent_at: { type: [string, 'null'], format: date-time, description: When a reviewer sent it to the seller. }
+        sent_by: { type: [string, 'null'], description: Email of the reviewer who sent it. }
         files:
           type: array
           items:
@@ -1380,6 +1891,23 @@ components:
         created_at: 2026-10-04T11:00:00Z
         files: [{ channel: amazon_style, row_count: 298, download_url: /v1/exports/9/files/amazon_style }]
         skipped_channels: [{ channel: own_website, reason: no approved listings }]
+        sent_at: null
+        sent_by: null
+    ExportPage:
+      type: object
+      required: [data, page]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Export' } }
+        page: { $ref: '#/components/schemas/Page' }
+      example:
+        data:
+          - id: '9'
+            created_at: 2026-10-04T11:00:00Z
+            files: [{ channel: amazon_style, row_count: 298, download_url: /v1/exports/9/files/amazon_style }]
+            skipped_channels: []
+            sent_at: 2026-10-04T11:05:00Z
+            sent_by: reviewer@example.com
+        page: { next_cursor: null, has_more: false }
     Budget:
       type: object
       required: [limit_micro_usd, spent_micro_usd, blocked_at]

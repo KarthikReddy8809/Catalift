@@ -69,6 +69,9 @@ func run() error {
 			return fmt.Errorf("store: %w", err)
 		}
 		defer st.Close()
+		if err := st.RequireMigrations(ctx); err != nil {
+			return err
+		}
 		checkers = append(checkers, st)
 		deps, err = buildDeps(ctx, cfg, st, logger)
 		if err != nil {
@@ -122,18 +125,26 @@ func buildDeps(ctx context.Context, cfg config.Config, st *store.Store, logger *
 	for _, e := range set.Errors {
 		logger.Error("channel file disabled", "file", e.File, "channel", e.ID, "reason", e.Error)
 	}
-	ls := listings.NewService(st.Pool, set)
+	cats, err := catalogue.LoadCategories(cfg.CategoriesFile)
+	if err != nil {
+		return nil, fmt.Errorf("categories: %w", err)
+	}
+	rules := channels.NewRegistry(set)
+	if err := listings.RefreshRules(ctx, store.New(st.Pool), rules); err != nil {
+		return nil, fmt.Errorf("channel rule edits: %w", err)
+	}
+	ls := listings.NewService(st.Pool, rules)
 	if err := ls.Recheck(ctx); err != nil {
 		return nil, fmt.Errorf("recheck listings: %w", err)
 	}
 	return &httpapi.Deps{
 		Auth:          auth.NewService(store.New(st.Pool)),
 		SignInLimiter: auth.NewLimiter(10, 15*time.Minute, time.Now),
-		Catalogue:     catalogue.NewService(st.Pool, cfg.DataDir),
-		Generation:    generation.NewService(st.Pool, set),
+		Catalogue:     catalogue.NewService(st.Pool, cfg.DataDir, cats),
+		Generation:    generation.NewService(st.Pool, rules),
 		Listings:      ls,
-		Exports:       exports.NewService(st.Pool, set, cfg.DataDir),
-		Channels:      set,
+		Exports:       exports.NewService(st.Pool, rules, cfg.DataDir),
+		Channels:      rules,
 		SecureCookies: cfg.SecureCookies,
 	}, nil
 }

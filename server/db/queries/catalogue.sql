@@ -4,16 +4,29 @@ ON CONFLICT ((lower(btrim(name)))) DO UPDATE SET updated_at = brands.updated_at
 RETURNING id;
 
 -- name: ListBrands :many
-SELECT id, name, voice_note, created_at, updated_at
+SELECT id, name, voice_note, created_at, updated_at, words_to_avoid
 FROM brands
 WHERE lower(name) > lower(sqlc.arg(after_name)::text)
+  AND (sqlc.narg(upload_id)::bigint IS NULL
+       OR EXISTS (SELECT 1 FROM products p WHERE p.brand_id = brands.id AND p.upload_id = sqlc.narg(upload_id)))
 ORDER BY lower(name)
 LIMIT sqlc.arg(page_size);
 
 -- name: UpdateBrandVoice :one
-UPDATE brands SET voice_note = sqlc.narg(voice_note), updated_at = now()
+-- A null words_to_avoid keeps the stored list.
+UPDATE brands SET voice_note = sqlc.narg(voice_note),
+    words_to_avoid = coalesce(sqlc.narg(words_to_avoid)::text[], words_to_avoid),
+    updated_at = now()
 WHERE id = sqlc.arg(id)
-RETURNING id, name, voice_note, created_at, updated_at;
+RETURNING id, name, voice_note, created_at, updated_at, words_to_avoid;
+
+-- name: AvoidWordsForProduct :one
+SELECT b.words_to_avoid FROM products p JOIN brands b ON b.id = p.brand_id WHERE p.id = $1;
+
+-- name: GeneratedListingsOfBrand :many
+SELECT l.id FROM listings l JOIN products p ON p.id = l.product_id
+WHERE p.brand_id = $1 AND l.status = 'generated'
+ORDER BY l.id;
 
 -- name: BrandsWithoutVoice :many
 SELECT DISTINCT b.name
@@ -34,7 +47,31 @@ SET rows_total = $2, rows_accepted = $3, rows_rejected = $4, updated_at = now()
 WHERE id = $1;
 
 -- name: InsertRowError :exec
-INSERT INTO upload_row_errors (upload_id, row_number, sku, reason) VALUES ($1, $2, $3, $4);
+INSERT INTO upload_row_errors (upload_id, row_number, sku, reason, raw_category, raw_brand, raw_price)
+VALUES ($1, $2, $3, $4, sqlc.narg(raw_category), sqlc.narg(raw_brand), sqlc.narg(raw_price));
+
+-- name: ListOpenRowErrors :many
+SELECT e.upload_id, u.file_name, e.row_number, e.sku, e.reason, e.raw_category, e.raw_brand, e.raw_price
+FROM upload_row_errors e
+JOIN uploads u ON u.id = e.upload_id
+WHERE (sqlc.narg(upload_id)::bigint IS NULL OR e.upload_id = sqlc.narg(upload_id))
+ORDER BY e.upload_id DESC, e.row_number;
+
+-- name: GetRowErrorForUpdate :one
+SELECT id FROM upload_row_errors WHERE upload_id = $1 AND row_number = $2 FOR UPDATE;
+
+-- name: DeleteRowError :exec
+DELETE FROM upload_row_errors WHERE id = $1;
+
+-- name: UpdateRowError :exec
+UPDATE upload_row_errors
+SET sku = sqlc.narg(sku), reason = sqlc.arg(reason), raw_category = sqlc.narg(raw_category),
+    raw_brand = sqlc.narg(raw_brand), raw_price = sqlc.narg(raw_price)
+WHERE id = sqlc.arg(id);
+
+-- name: CountRowFixed :exec
+UPDATE uploads SET rows_accepted = rows_accepted + 1, rows_rejected = rows_rejected - 1, updated_at = now()
+WHERE id = $1 AND rows_rejected > 0;
 
 -- name: InsertProduct :one
 INSERT INTO products (sku, brand_id, upload_id, category, price_minor)
@@ -73,13 +110,22 @@ VALUES ($1, $2, $3, $4, $5, $6, $7);
 SELECT detection_path, content_type FROM product_images WHERE product_id = $1 ORDER BY position LIMIT 1;
 
 -- name: ListProducts :many
-SELECT p.id, p.sku, p.category, p.price_minor, p.currency, p.created_at,
+SELECT p.id, p.sku, p.category, p.price_minor, p.currency, p.created_at, p.upload_id,
        b.id AS brand_id, b.name AS brand_name,
        (SELECT count(*) FROM product_images i WHERE i.product_id = p.id)::int AS image_count,
        coalesce(a.detection_status, 'pending')::detection_status AS detection_status,
        coalesce(a.revision, 0)::int AS revision,
-       a.colour, a.pattern, a.sleeve, a.neckline, a.fit, a.detection_error,
-       coalesce((SELECT sum(s.spend_micro_usd) FROM ai_call_spend s WHERE s.product_id = p.id), 0)::bigint AS ai_cost_micro_usd
+       a.colour, a.pattern, a.sleeve, a.neckline, a.fit, a.detection_error, a.detection_confidence,
+       (a.product_id IS NOT NULL)::boolean AS enrichment_started,
+       coalesce((SELECT sum(s.spend_micro_usd) FROM ai_call_spend s WHERE s.product_id = p.id), 0)::bigint AS ai_cost_micro_usd,
+       -- Listing counts the product status is derived from (seller flow step 5).
+       (SELECT count(*) FROM listings l WHERE l.product_id = p.id)::int AS listings_total,
+       (SELECT count(*) FROM listings l WHERE l.product_id = p.id AND l.status = 'queued')::int AS listings_queued,
+       (SELECT count(*) FROM listings l WHERE l.product_id = p.id AND l.status = 'failed')::int AS listings_failed,
+       (SELECT count(*) FROM listings l WHERE l.product_id = p.id AND l.status = 'stopped_budget')::int AS listings_stopped,
+       (SELECT count(*) FROM listings l WHERE l.product_id = p.id AND l.rule_status = 'failing')::int AS listings_failing,
+       (SELECT count(*) FROM listings l WHERE l.product_id = p.id AND EXISTS (
+          SELECT 1 FROM approvals ap WHERE ap.listing_id = l.id AND ap.listing_version = l.version))::int AS listings_approved
 FROM products p
 JOIN brands b ON b.id = p.brand_id
 LEFT JOIN product_attributes a ON a.product_id = p.id
@@ -98,5 +144,30 @@ WHERE (sqlc.narg(upload_id)::bigint IS NULL OR p.upload_id = sqlc.narg(upload_id
 ORDER BY p.id;
 
 -- name: GetProductForPrompt :one
-SELECT p.id, p.sku, p.category, p.price_minor, p.currency, b.name AS brand_name, b.voice_note
+SELECT p.id, p.sku, p.category, p.price_minor, p.currency, b.name AS brand_name, b.voice_note, b.words_to_avoid
 FROM products p JOIN brands b ON b.id = p.brand_id WHERE p.id = $1;
+
+-- name: GetProductForUpdate :one
+SELECT p.id, p.sku, p.category, p.price_minor, b.name AS brand_name
+FROM products p JOIN brands b ON b.id = p.brand_id
+WHERE p.id = $1 FOR UPDATE OF p;
+
+-- name: SkuTakenByOther :one
+SELECT EXISTS (SELECT 1 FROM products WHERE lower(sku) = lower(sqlc.arg(sku)::text) AND id <> sqlc.arg(id))::boolean;
+
+-- name: UpdateProductFields :exec
+UPDATE products SET sku = $2, brand_id = $3, category = $4, price_minor = $5, updated_at = now()
+WHERE id = $1;
+
+-- name: ProductHasApprovals :one
+SELECT EXISTS (
+  SELECT 1 FROM listings l JOIN approvals a ON a.listing_id = l.id AND a.listing_version = l.version
+  WHERE l.product_id = $1
+)::boolean;
+
+-- name: DiscardRowError :execrows
+DELETE FROM upload_row_errors WHERE upload_id = $1 AND row_number = $2;
+
+-- name: DiscardRowErrors :execrows
+DELETE FROM upload_row_errors
+WHERE (sqlc.narg(upload_id)::bigint IS NULL OR upload_id = sqlc.narg(upload_id));

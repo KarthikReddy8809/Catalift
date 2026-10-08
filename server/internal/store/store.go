@@ -54,3 +54,27 @@ func (s *Store) Ping(ctx context.Context) error {
 
 // Close drains the pool. Call it after the HTTP server has stopped.
 func (s *Store) Close() { s.Pool.Close() }
+
+// AppliedMigrations reads which goose versions are applied now: for each
+// version its latest row decides, since goose records a Down as a new row.
+func (s *Store) AppliedMigrations(ctx context.Context) (map[int64]bool, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT DISTINCT ON (version_id) version_id, is_applied
+		FROM goose_db_version ORDER BY version_id, id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("read goose_db_version (has make migrate ever run?): %w", err)
+	}
+	defer rows.Close()
+	out := map[int64]bool{}
+	for rows.Next() {
+		var v int64
+		var applied bool
+		if err := rows.Scan(&v, &applied); err != nil {
+			return nil, fmt.Errorf("scan goose_db_version: %w", err)
+		}
+		out[v] = applied
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read goose_db_version: %w", err)
+	}
+	return out, nil
+}

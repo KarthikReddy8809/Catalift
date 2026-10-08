@@ -1,0 +1,17 @@
+# The migrate image: the goose version pinned in tools/go.mod and the
+# migration files. Compose runs it once per deploy, before the API and the
+# worker start (HLD section 12); it applies every pending migration and exits.
+FROM golang:1.26.8 AS build
+WORKDIR /src/tools
+COPY tools/go.mod tools/go.sum ./
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/goose github.com/pressly/goose/v3/cmd/goose
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/goose /goose
+COPY db/migrations /migrations
+# The connection string arrives as GOOSE_DBSTRING from the deploy env file.
+ENV GOOSE_DRIVER=postgres \
+    GOOSE_MIGRATION_DIR=/migrations
+USER nonroot
+ENTRYPOINT ["/goose"]
+CMD ["up"]

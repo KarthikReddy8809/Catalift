@@ -9,6 +9,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
+import { ExportList, type ExportListItem } from "./ExportList";
+
 export interface ChannelReadiness {
   channel: string;
   name: string;
@@ -31,6 +33,12 @@ export interface ExportViewProps {
   requestId?: string;
   /** Writes the files; absent in the design gallery. */
   onExport?: () => void;
+  /** Earlier exports, newest first, each sent to the seller once (ADR-0012). */
+  history?: ExportListItem[];
+  onSend?: ((id: string) => void) | undefined;
+  sendingId?: string | undefined;
+  /** Why the last send failed, shown above the list. */
+  sendError?: string | undefined;
 }
 
 /**
@@ -45,6 +53,10 @@ export function ExportView({
   skipped = [],
   requestId,
   onExport,
+  history = [],
+  onSend,
+  sendingId,
+  sendError,
 }: ExportViewProps) {
   const approvedTotal = channels.reduce((s, c) => s + c.approved, 0);
   return (
@@ -66,6 +78,14 @@ export function ExportView({
         </Button>
       </header>
 
+      {status === "done" ? (
+        <Alert role="status">
+          <AlertTitle>Files written</AlertTitle>
+          <AlertDescription>
+            Check them, then use Send to seller below so the seller can download them.
+          </AlertDescription>
+        </Alert>
+      ) : null}
       {status === "nothing-approved" ? (
         <Alert role="alert">
           <AlertTitle>No listing is approved yet</AlertTitle>
@@ -126,6 +146,30 @@ export function ExportView({
         Listings edited after approval are left out until they are approved again. Cells that start
         with =, +, - or @ are escaped so spreadsheets do not run them.
       </p>
+
+      <section aria-labelledby="exports-sent" className="space-y-3">
+        <div className="space-y-1">
+          <h2 id="exports-sent" className="text-lg font-semibold tracking-tight">
+            Send to the seller
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            The seller sees an export, and can download its files, only after you send it.
+          </p>
+        </div>
+        {sendError ? (
+          <Alert variant="destructive" role="alert">
+            <AlertTitle>The export was not sent</AlertTitle>
+            <AlertDescription>{sendError}</AlertDescription>
+          </Alert>
+        ) : null}
+        {history.length > 0 ? (
+          <ExportList exports={history} onSend={onSend} sendingId={sendingId} />
+        ) : (
+          <p className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">
+            No export yet. Export the approved listings above, then send them here.
+          </p>
+        )}
+      </section>
     </div>
   );
 }

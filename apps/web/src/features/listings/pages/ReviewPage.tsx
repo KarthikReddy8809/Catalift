@@ -3,10 +3,14 @@ import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { sessionQueryOptions } from "@/features/auth/api";
+import { productsQueryOptions, type Product } from "@/features/catalogue/api";
+import { useCurrentUpload } from "@/features/catalogue/current";
 import { ApiError, errorBody } from "@/lib/api";
+import { env } from "@/lib/env";
 
 import {
   approve,
+  checkDraft,
   listingKeys,
   listingsQueryOptions,
   regenerate,
@@ -16,11 +20,13 @@ import {
 import {
   ReviewGridView,
   type ApproveResult,
+  type GridFilter,
   type GridRow,
+  type LiveCheck,
   type ReviewGridViewProps,
 } from "../components/ReviewGridView";
 
-function toRow(l: Listing): GridRow {
+function toRow(l: Listing, p: Product | undefined): GridRow {
   const b = l.bullets ?? [];
   const a = l.attributes;
   const reg = l.latest_regeneration;
@@ -36,6 +42,14 @@ function toRow(l: Listing): GridRow {
     attributes: [a.colour, a.pattern, a.sleeve, a.neckline, a.fit]
       .filter((v): v is string => v !== null && v !== "unknown")
       .join(", "),
+    productId: l.product_id,
+    missingAttributes: [a.colour, a.pattern, a.sleeve, a.neckline, a.fit].some(
+      (v) => v === null || v === "unknown",
+    ),
+    confidence: p?.attributes.confidence,
+    costMicroUsd: p?.ai_cost_micro_usd,
+    imageUrl:
+      p && p.image_count > 0 ? `${env.VITE_API_URL}/v1/products/${l.product_id}/image` : undefined,
     ruleStatus: l.rule_status,
     ruleFailures: l.rule_failures,
     approved: l.approved,
@@ -53,8 +67,12 @@ export function ReviewPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: session } = useSuspenseQuery(sessionQueryOptions());
-  const listings = useQuery(listingsQueryOptions());
-  const [filter, setFilter] = useState<"all" | "failing" | "unapproved">("all");
+  // Only the newest upload's listings; older ones stay in the database.
+  const current = useCurrentUpload();
+  const listings = useQuery({ ...listingsQueryOptions(current.id), enabled: current.ready });
+  const products = useQuery({ ...productsQueryOptions(current.id), enabled: current.ready });
+  const [filter, setFilter] = useState<GridFilter>("all");
+  const [liveCheck, setLiveCheck] = useState<LiveCheck | undefined>();
   const [selected, setSelected] = useState<string[]>([]);
   const [editingId, setEditingId] = useState<string | undefined>();
   const [conflict, setConflict] = useState(false);
@@ -67,7 +85,10 @@ export function ReviewPage() {
     onMutate: () => {
       setConflict(false);
     },
-    onSuccess: () => void refresh(),
+    onSuccess: () => {
+      setLiveCheck(undefined);
+      void refresh();
+    },
     onError: (err) => {
       if (err instanceof ApiError && err.status === 409) setConflict(true);
     },
@@ -75,7 +96,11 @@ export function ReviewPage() {
   const regen = useMutation({
     mutationFn: (v: { id: string; field: Parameters<typeof regenerate>[1]; instruction: string }) =>
       regenerate(v.id, v.field, v.instruction),
-    onSuccess: () => void refresh(),
+    onSuccess: () => {
+      // A rewrite is one more AI call, so the product's cost moves too.
+      void refresh();
+      void queryClient.invalidateQueries({ queryKey: ["catalogue"] });
+    },
   });
   const approval = useMutation({
     mutationFn: approve,
@@ -96,7 +121,19 @@ export function ReviewPage() {
     },
   });
 
-  const rows = (listings.data ?? []).map(toRow);
+  const byProduct = new Map((products.data ?? []).map((p) => [p.id, p]));
+  const rows = (listings.data ?? []).map((l) => toRow(l, byProduct.get(l.product_id)));
+  const draft = useMutation({
+    mutationFn: (v: { id: string; changes: Parameters<typeof checkDraft>[1] }) =>
+      checkDraft(v.id, v.changes),
+    onSuccess: (res, v) => {
+      setLiveCheck({
+        listingId: v.id,
+        ruleStatus: res.rule_status,
+        ruleFailures: res.rule_failures,
+      });
+    },
+  });
   const failure = listings.error ?? save.error ?? regen.error ?? approval.error;
   const props: ReviewGridViewProps = {
     status: listings.isPending ? "loading" : listings.isError ? "error" : "ready",
@@ -107,6 +144,7 @@ export function ReviewPage() {
     editingId,
     conflict,
     approveResult,
+    liveCheck,
     actions: {
       onFilterChange: setFilter,
       onToggleSelect: (id, on) => {
@@ -123,6 +161,9 @@ export function ReviewPage() {
       },
       onClose: () => {
         setEditingId(undefined);
+      },
+      onDraft: (row, changes) => {
+        draft.mutate({ id: row.id, changes });
       },
       onSave: (row, changes) => {
         save.mutate({ row, changes });

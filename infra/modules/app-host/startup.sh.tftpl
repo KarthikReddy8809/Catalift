@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Runs as root on every boot of the Catalift VM. Idempotent: installs Docker
+# with the compose plugin and the Ops Agent once, mounts the data disk
+# (formatting it only when it is blank), prepares the folders the compose
+# file mounts, and lets root pull from Artifact Registry. Deploys
+# (deploy.sh) do the rest.
+set -euo pipefail
+
+disk=/dev/disk/by-id/google-${data_device}
+mnt=/mnt/data
+
+# Docker Engine and the compose plugin, from Docker's apt repository.
+if ! command -v docker >/dev/null; then
+  apt-get update
+  apt-get install -y ca-certificates curl gnupg
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+    > /etc/apt/sources.list.d/docker.list
+  apt-get update
+  apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  systemctl enable --now docker
+fi
+
+# Ops Agent: VM metrics and system logs to Cloud Monitoring and Logging (ADR-0010).
+if ! systemctl list-unit-files google-cloud-ops-agent.service >/dev/null 2>&1; then
+  curl -fsSL https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh -o /tmp/add-ops-agent.sh
+  bash /tmp/add-ops-agent.sh --also-install
+fi
+
+# The data disk: format only a blank disk, never one that holds data.
+if ! blkid "$disk" >/dev/null 2>&1; then
+  mkfs.ext4 -m 0 -E lazy_itable_init=0,lazy_journal_init=0,discard "$disk"
+fi
+mkdir -p "$mnt"
+grep -q " $mnt " /etc/fstab || echo "$disk $mnt ext4 discard,defaults,nofail 0 2" >> /etc/fstab
+mountpoint -q "$mnt" || mount "$mnt"
+
+mkdir -p "$mnt/postgres" "$mnt/app" "$mnt/web/releases" "$mnt/caddy/data" "$mnt/caddy/config" /opt/catalift
+# The server image runs as distroless nonroot (uid 65532).
+chown -R 65532:65532 "$mnt/app"
+
+# Root pulls images with the VM's service account.
+gcloud auth configure-docker ${registry_host} --quiet
+
+# Nightly database dump, once deploy.sh has put the unit files in place.
+if [[ -f /opt/catalift/catalift-backup.timer ]]; then
+  cp /opt/catalift/catalift-backup.service /opt/catalift/catalift-backup.timer /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now catalift-backup.timer
+fi
+
+# After a reboot, start the last deployed build again.
+if [[ -f /opt/catalift/.env ]]; then
+  (cd /opt/catalift && docker compose up -d) || true
+fi

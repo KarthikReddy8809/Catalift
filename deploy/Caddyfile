@@ -1,0 +1,37 @@
+# Catalift's front door (ADR-0013): HTTPS with automatic certificates, the
+# web build from the data disk, and /v1 to the API on the compose network.
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "DENY"
+		-Server
+	}
+
+	# The API and its health routes.
+	handle /v1/* {
+		reverse_proxy api:8080
+	}
+	handle /healthz {
+		reverse_proxy api:8080
+	}
+	handle /readyz {
+		reverse_proxy api:8080
+	}
+
+	# Hashed build assets never change, so browsers keep them for a year.
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+
+	# The single-page app: a file if it exists, otherwise index.html so a
+	# reload on /products or /review still opens the app.
+	handle {
+		root * /srv/web/current
+		try_files {path} /index.html
+		header /index.html Cache-Control "no-cache"
+		file_server
+	}
+}

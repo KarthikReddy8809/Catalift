@@ -22,11 +22,39 @@ type Row struct {
 	PriceMinor int64
 }
 
-// RowError is one rejected CSV row with the reason the seller sees.
+// RowError is one rejected CSV row with the reason the seller sees, and the
+// values as typed, so the seller can correct them in place and send the row
+// again (seller flow step 2).
 type RowError struct {
-	Row    int
-	SKU    string
-	Reason string
+	Row      int
+	SKU      string
+	Reason   string
+	Category string
+	Brand    string
+	Price    string
+}
+
+// ValidateRow checks one row's values; it is shared by the CSV upload and a
+// seller's correction of a rejected row, so both apply the same rules. The
+// reason is empty when the row is valid.
+func ValidateRow(line int, sku, category, brand, price string) (row Row, reason string) {
+	row = Row{Line: line, SKU: strings.TrimSpace(sku), Category: strings.TrimSpace(category), Brand: strings.TrimSpace(brand)}
+	switch {
+	case row.SKU == "":
+		return row, "sku is missing"
+	case !skuRe.MatchString(row.SKU):
+		return row, "sku must have no spaces and at most 64 characters"
+	case row.Category == "" || len(row.Category) > 100:
+		return row, "category is missing or longer than 100 characters"
+	case row.Brand == "" || len(row.Brand) > 100:
+		return row, "brand is missing"
+	}
+	p, ok := rupeesToPaise(price)
+	if !ok {
+		return row, "price must be a positive number of rupees"
+	}
+	row.PriceMinor = p
+	return row, ""
 }
 
 // ErrBadHeader means the file is not a Catalift product list at all.
@@ -74,29 +102,13 @@ func ParseCSV(r io.Reader) ([]Row, []RowError, error) {
 			}
 			return ""
 		}
-		row := Row{Line: line, SKU: get("sku"), Category: get("category"), Brand: get("brand")}
-		reason := ""
-		switch {
-		case row.SKU == "":
-			reason = "sku is missing"
-		case !skuRe.MatchString(row.SKU):
-			reason = "sku must have no spaces and at most 64 characters"
-		case seen[strings.ToLower(row.SKU)] != 0:
+		row, reason := ValidateRow(line, get("sku"), get("category"), get("brand"), get("price"))
+		if reason == "" && seen[strings.ToLower(row.SKU)] != 0 {
 			reason = fmt.Sprintf("SKU %s is repeated in this file (first on row %d)", row.SKU, seen[strings.ToLower(row.SKU)])
-		case row.Category == "" || len(row.Category) > 100:
-			reason = "category is missing or longer than 100 characters"
-		case row.Brand == "" || len(row.Brand) > 100:
-			reason = "brand is missing"
-		}
-		if reason == "" {
-			p, ok := rupeesToPaise(get("price"))
-			if !ok {
-				reason = "price must be a positive number of rupees"
-			}
-			row.PriceMinor = p
 		}
 		if reason != "" {
-			errs = append(errs, RowError{Row: line, SKU: row.SKU, Reason: reason})
+			errs = append(errs, RowError{Row: line, SKU: row.SKU, Reason: reason,
+				Category: clipRaw(get("category")), Brand: clipRaw(get("brand")), Price: clipRaw(get("price"))})
 			continue
 		}
 		seen[strings.ToLower(row.SKU)] = line
@@ -135,4 +147,13 @@ func MatchSKU(fileName string, skus []string) string {
 		}
 	}
 	return best
+}
+
+// clipRaw keeps a typed value short enough to store for correction.
+func clipRaw(v string) string {
+	r := []rune(v)
+	if len(r) > 100 {
+		return string(r[:100])
+	}
+	return v
 }

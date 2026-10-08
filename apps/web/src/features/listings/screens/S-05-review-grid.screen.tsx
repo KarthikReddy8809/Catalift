@@ -8,6 +8,14 @@ import {
   type ReviewGridViewProps,
 } from "../components/ReviewGridView";
 
+// Per-product facts every channel row of that product shares. Cost in
+// micro-USD: one enrichment call (6,100), plus one title rewrite (1,100) on KU-104.
+const PRODUCT: Record<string, Partial<GridRow>> = {
+  "KU-102": { costMicroUsd: 6_100, confidence: 0.93 },
+  "KU-104": { costMicroUsd: 6_100 + 1_100, confidence: 0.91 },
+  "KU-117": { costMicroUsd: 6_100, confidence: 0.48 },
+};
+
 const base = (
   id: string,
   sku: string,
@@ -33,6 +41,7 @@ const base = (
   ruleStatus: "passing",
   ruleFailures: [],
   approved: false,
+  ...PRODUCT[sku],
   ...extra,
 });
 

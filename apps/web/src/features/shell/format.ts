@@ -24,3 +24,14 @@ export function formatUsdMicro(micro: number): string {
     maximumFractionDigits: digits,
   }).format(usd);
 }
+
+const when = new Intl.DateTimeFormat("en-IN", {
+  dateStyle: "medium",
+  timeStyle: "short",
+  timeZone: "Asia/Kolkata",
+});
+
+/** formatIst shows an API timestamp in India time, where the team works. */
+export function formatIst(iso: string): string {
+  return `${when.format(new Date(iso))} IST`;
+}

@@ -3,6 +3,7 @@ package ai
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 )
@@ -29,10 +30,13 @@ type Product struct {
 	Brand     string
 	Category  string
 	VoiceNote string
+	// AvoidWords are the brand's words to avoid; the rules engine checks them too.
+	AvoidWords []string
 }
 
 // ChannelBrief is what generation must respect for one channel.
 type ChannelBrief struct {
+	ID             string
 	Name           string
 	TitleMaxLength int
 	BannedWords    []string
@@ -43,6 +47,9 @@ const (
 	TemplateDetect     = "detect-v1"
 	TemplateGenerate   = "generate-v1"
 	TemplateRegenerate = "regenerate-v1"
+	// TemplateEnrich is the single vision call per product (seller flow
+	// step 3): attributes, a confidence and a listing per channel at once.
+	TemplateEnrich = "enrich-v1"
 )
 
 // DetectPrompt asks for the five attributes of the garment in the photo.
@@ -71,7 +78,68 @@ Answer with JSON only:
 {"title": "...", "bullets": ["...", "...", "...", "...", "..."], "description": "..."}
 Exactly 5 bullets, each one short sentence.`,
 		c.Name, p.SKU, p.Category, p.Brand, a.Colour, a.Pattern, a.Sleeve, a.Neckline, a.Fit,
-		voice, c.TitleMaxLength, strings.Join(c.BannedWords, ", "))
+		voice+avoidLine(p), c.TitleMaxLength, strings.Join(c.BannedWords, ", "))
+}
+
+// EnrichPrompt asks, with the product photo, for the attributes and a
+// listing for every channel in one answer.
+func EnrichPrompt(p Product, chans []ChannelBrief) string {
+	var rules strings.Builder
+	keys := make([]string, 0, len(chans))
+	for _, c := range chans {
+		fmt.Fprintf(&rules, "- Channel %s (%s): the title is at most %d characters; never use these words or phrases: %s.\n",
+			c.ID, c.Name, c.TitleMaxLength, strings.Join(c.BannedWords, ", "))
+		keys = append(keys, fmt.Sprintf(`%q: {"title": "...", "bullets": ["...", "...", "...", "...", "..."], "description": "..."}`, c.ID))
+	}
+	return fmt.Sprintf(`You are cataloguing an apparel product from its photo and writing its listings.
+Product: SKU %s, category %s, brand %s.
+Brand voice: %s
+Step 1. Look only at the garment in the photo and name its colour, pattern, sleeve, neckline and fit
+with short lowercase values such as "navy", "solid", "three-quarter sleeve", "round neck", "regular".
+If a value cannot be seen, use "unknown". Never guess. Give your confidence in the attributes from 0 to 1.
+Step 2. Write one listing per channel from those attributes only; invent no materials, sizes or claims.
+Each listing has a title, exactly 5 bullets (one short sentence each) and a description.
+%sAnswer with JSON only:
+{"attributes": {"colour": "...", "pattern": "...", "sleeve": "...", "neckline": "...", "fit": "..."},
+ "confidence": 0.0,
+ "listings": {%s}}`, p.SKU, p.Category, p.Brand, orNeutral(p.VoiceNote)+avoidLine(p), rules.String(), strings.Join(keys, ", "))
+}
+
+// Enrichment is the answer to EnrichPrompt.
+type Enrichment struct {
+	Attributes Attributes
+	// Confidence is the model's own 0 to 1 confidence in the attributes.
+	Confidence float64
+	Listings   map[string]ListingText
+}
+
+// ParseEnrichment reads an enrichment answer; every channel asked for must
+// have a complete listing, or the answer is refused and the job retried.
+func ParseEnrichment(text string, channelIDs []string) (Enrichment, error) {
+	var raw struct {
+		Attributes json.RawMessage            `json:"attributes"`
+		Confidence *float64                   `json:"confidence"`
+		Listings   map[string]json.RawMessage `json:"listings"`
+	}
+	if err := json.Unmarshal([]byte(jsonObject.FindString(text)), &raw); err != nil {
+		return Enrichment{}, fmt.Errorf("the model's answer was not the enrichment JSON: %w", err)
+	}
+	a, err := ParseAttributes(string(raw.Attributes))
+	if err != nil {
+		return Enrichment{}, err
+	}
+	out := Enrichment{Attributes: a, Confidence: 0.5, Listings: map[string]ListingText{}}
+	if raw.Confidence != nil {
+		out.Confidence = math.Min(1, math.Max(0, *raw.Confidence))
+	}
+	for _, id := range channelIDs {
+		l, err := ParseListing(string(raw.Listings[id]))
+		if err != nil {
+			return Enrichment{}, fmt.Errorf("listing for %s: %w", id, err)
+		}
+		out.Listings[id] = l
+	}
+	return out, nil
 }
 
 // RegeneratePrompt asks for one field again, following the reviewer's instruction.
@@ -88,8 +156,17 @@ Reviewer's instruction: %s
 Never use these words or phrases: %s.%s
 Answer with JSON only: {"text": "..."}`,
 		strings.ReplaceAll(field, "_", " "), c.Name, p.SKU, p.Category, p.Brand,
-		a.Colour, a.Pattern, a.Sleeve, a.Neckline, a.Fit, orNeutral(p.VoiceNote),
+		a.Colour, a.Pattern, a.Sleeve, a.Neckline, a.Fit, orNeutral(p.VoiceNote)+avoidLine(p),
 		strings.ReplaceAll(field, "_", " "), current, instruction, strings.Join(c.BannedWords, ", "), limit)
+}
+
+// avoidLine adds the brand's words to avoid under its voice; a brand with none
+// gets no line, so its prompt is unchanged.
+func avoidLine(p Product) string {
+	if len(p.AvoidWords) == 0 {
+		return ""
+	}
+	return "\nThe brand never uses these words or phrases: " + strings.Join(p.AvoidWords, ", ") + "."
 }
 
 func orNeutral(v string) string {

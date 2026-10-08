@@ -1,7 +1,9 @@
 import { queryOptions } from "@tanstack/react-query";
 import { z } from "zod";
 
+import { apiSend } from "@/lib/api";
 import { fetchAllPages } from "@/lib/paged";
+import { uploadQuery } from "@/lib/upload-filter";
 
 export const channelSchema = z.object({
   id: z.string(),
@@ -20,15 +22,37 @@ export const channelSchema = z.object({
       created_at: z.string(),
     })
     .nullable(),
+  config_hash: z.string().nullable(),
+  last_edit: z.object({ by: z.string(), at: z.string() }).nullable(),
   listings_total: z.number(),
   listings_approved: z.number(),
 });
 
 export type Channel = z.infer<typeof channelSchema>;
 
-export function channelsQueryOptions() {
+/** channelsQueryOptions: the rules, with listing counts for one upload or every upload. */
+export function channelsQueryOptions(uploadId?: string) {
   return queryOptions({
-    queryKey: ["channels"] as const,
-    queryFn: ({ signal }) => fetchAllPages("/v1/channels", channelSchema, signal),
+    queryKey: ["channels", uploadId ?? "all"] as const,
+    queryFn: ({ signal }) =>
+      fetchAllPages(uploadQuery("/v1/channels", uploadId), channelSchema, signal),
+  });
+}
+
+export const rulesResultSchema = z.object({
+  channel: z.string(),
+  listings_rechecked: z.number(),
+  approvals_cleared: z.number(),
+});
+
+/** saveRules changes a channel's rules (PATCH /v1/channels/{id}) and reports the re-check. */
+export function saveRules(
+  id: string,
+  configHash: string,
+  rules: { title_max_length: number; required_attributes: string[]; banned_words: string[] },
+) {
+  return apiSend(`/v1/channels/${id}`, rulesResultSchema, {
+    method: "PATCH",
+    body: { config_hash: configHash, ...rules },
   });
 }

@@ -41,17 +41,17 @@ var fieldMax = map[string]int{
 
 // Worker claims and runs jobs.
 type Worker struct {
-	pool     *pgxpool.Pool
-	gw       *ai.Gateway
-	channels channels.Set
-	log      *slog.Logger
-	name     string
-	now      func() time.Time
+	pool  *pgxpool.Pool
+	gw    *ai.Gateway
+	rules *channels.Registry
+	log   *slog.Logger
+	name  string
+	now   func() time.Time
 }
 
 // New builds a worker. name identifies it on claimed jobs.
-func New(pool *pgxpool.Pool, gw *ai.Gateway, set channels.Set, log *slog.Logger, name string) *Worker {
-	return &Worker{pool: pool, gw: gw, channels: set, log: log, name: name, now: time.Now}
+func New(pool *pgxpool.Pool, gw *ai.Gateway, rules *channels.Registry, log *slog.Logger, name string) *Worker {
+	return &Worker{pool: pool, gw: gw, rules: rules, log: log, name: name, now: time.Now}
 }
 
 // Run claims jobs on Concurrency loops and sweeps stale work every minute,
@@ -124,15 +124,20 @@ func (w *Worker) RunOne(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("claim job: %w", err)
 	}
 	jctx := context.WithoutCancel(ctx)
+	// A reviewer may have changed a channel's rules since the last job.
+	if err := listings.RefreshRules(jctx, q, w.rules); err != nil {
+		w.log.Warn("rule edits not refreshed; using the last known rules", "err", err)
+	}
+	set := w.rules.Current() // this job's rules; other jobs may refresh meanwhile
 	log := w.log.With("job_id", job.ID, "type", job.Type, "product_id", job.ProductID)
 	var runErr error
 	switch job.Type {
 	case store.JobTypeDetectAttributes:
-		runErr = w.detect(jctx, job)
+		runErr = w.detect(jctx, job, set)
 	case store.JobTypeGenerateListing:
-		runErr = w.generate(jctx, job)
+		runErr = w.generate(jctx, job, set)
 	case store.JobTypeRegenerateField:
-		runErr = w.regenerate(jctx, job)
+		runErr = w.regenerate(jctx, job, set)
 	default:
 		runErr = fmt.Errorf("unknown job type %q", job.Type)
 	}
@@ -215,7 +220,7 @@ func (w *Worker) product(ctx context.Context, q *store.Queries, id int64) (ai.Pr
 	if err != nil {
 		return ai.Product{}, fmt.Errorf("load product %d: %w", id, err)
 	}
-	return ai.Product{SKU: p.Sku, Brand: p.BrandName, Category: p.Category, VoiceNote: p.VoiceNote.String}, nil
+	return ai.Product{SKU: p.Sku, Brand: p.BrandName, Category: p.Category, VoiceNote: p.VoiceNote.String, AvoidWords: p.WordsToAvoid}, nil
 }
 
 func attrsOf(a store.GetAttributesRow) ai.Attributes {
@@ -223,12 +228,15 @@ func attrsOf(a store.GetAttributesRow) ai.Attributes {
 }
 
 func brief(c channels.Channel) ai.ChannelBrief {
-	return ai.ChannelBrief{Name: c.Name, TitleMaxLength: c.TitleMaxLength, BannedWords: c.BannedWords}
+	return ai.ChannelBrief{ID: c.ID, Name: c.Name, TitleMaxLength: c.TitleMaxLength, BannedWords: c.BannedWords}
 }
 
-// detect reads the five attributes from the product's first photo (D23),
-// then queues a listing per queued channel at the new revision.
-func (w *Worker) detect(ctx context.Context, job store.ClaimJobRow) error {
+// detect enriches a product with one vision call (seller flow step 3): the
+// photo's attributes and a listing for every enabled channel come back in
+// one answer, and are written and rule-checked in one transaction. A listing
+// of a channel added later, or one re-queued after a correction, is written
+// by the text-only generate job instead.
+func (w *Worker) detect(ctx context.Context, job store.ClaimJobRow, set channels.Set) error {
 	q := store.New(w.pool)
 	p, err := w.product(ctx, q, job.ProductID)
 	if err != nil {
@@ -245,21 +253,29 @@ func (w *Worker) detect(ctx context.Context, job store.ClaimJobRow) error {
 	if err != nil {
 		return fmt.Errorf("read detection copy: %w", err)
 	}
+	briefs := make([]ai.ChannelBrief, 0, len(set.Channels))
+	ids := make([]string, 0, len(set.Channels))
+	for i := range set.Channels {
+		briefs = append(briefs, brief(set.Channels[i]))
+		ids = append(ids, set.Channels[i].ID)
+	}
 	resp, err := w.gw.Call(ctx, job.ID, job.ProductID, ai.Request{
-		Purpose: ai.PurposeDetect, TemplateID: ai.TemplateDetect, Prompt: ai.DetectPrompt(p),
+		Purpose: ai.PurposeDetect, TemplateID: ai.TemplateEnrich, Prompt: ai.EnrichPrompt(p, briefs),
 		Image: data, ImageType: "image/jpeg",
 	})
 	if err != nil {
 		return err
 	}
-	a, err := ai.ParseAttributes(resp.Text)
+	e, err := ai.ParseEnrichment(resp.Text, ids)
 	if err != nil {
 		return err
 	}
+	a := e.Attributes
 	t := func(s string) pgtype.Text { return pgtype.Text{String: s, Valid: true} }
 	return listings.InTx(ctx, w.pool, func(tq *store.Queries) error {
 		rev, err := tq.SetDetectionDone(ctx, store.SetDetectionDoneParams{
 			ProductID: job.ProductID, Colour: t(a.Colour), Pattern: t(a.Pattern), Sleeve: t(a.Sleeve), Neckline: t(a.Neckline), Fit: t(a.Fit),
+			Confidence: pgtype.Float4{Float32: float32(e.Confidence), Valid: true},
 		})
 		if err != nil {
 			return fmt.Errorf("store attributes: %w", err)
@@ -269,7 +285,17 @@ func (w *Worker) detect(ctx context.Context, job store.ClaimJobRow) error {
 			return fmt.Errorf("queued listings: %w", err)
 		}
 		for _, l := range queued {
-			if err := generation.EnqueueGenerate(ctx, tq, job.RunID, job.ProductID, l.ID, rev); err != nil {
+			text, ok := e.Listings[l.Channel]
+			if !ok {
+				if err := generation.EnqueueGenerate(ctx, tq, job.RunID, job.ProductID, l.ID, rev); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := writeListing(ctx, tq, l.ID, text); err != nil {
+				return err
+			}
+			if _, _, err := listings.Revalidate(ctx, tq, set, l.ID); err != nil {
 				return err
 			}
 		}
@@ -277,16 +303,29 @@ func (w *Worker) detect(ctx context.Context, job store.ClaimJobRow) error {
 	})
 }
 
+// writeListing stores generated text, clipped to the column limits.
+func writeListing(ctx context.Context, q *store.Queries, id int64, text ai.ListingText) error {
+	t := func(s string, n int) pgtype.Text { return pgtype.Text{String: clip(s, n), Valid: true} }
+	if _, err := q.WriteGenerated(ctx, store.WriteGeneratedParams{
+		ID: id, Title: t(text.Title, fieldMax["title"]),
+		Bullet1: t(text.Bullets[0], 1000), Bullet2: t(text.Bullets[1], 1000), Bullet3: t(text.Bullets[2], 1000),
+		Bullet4: t(text.Bullets[3], 1000), Bullet5: t(text.Bullets[4], 1000), Description: t(text.Description, fieldMax["description"]),
+	}); err != nil {
+		return fmt.Errorf("write listing: %w", err)
+	}
+	return nil
+}
+
 // generate writes one channel's listing from the attribute revision the job
 // was queued with; if a correction raised the revision meanwhile, the job
 // re-queues itself at the new one instead of writing stale text (D5).
-func (w *Worker) generate(ctx context.Context, job store.ClaimJobRow) error {
+func (w *Worker) generate(ctx context.Context, job store.ClaimJobRow, set channels.Set) error {
 	q := store.New(w.pool)
 	l, err := q.GetListing(ctx, job.ListingID.Int64)
 	if err != nil {
 		return fmt.Errorf("load listing: %w", err)
 	}
-	ch, ok := w.channels.Get(l.Channel)
+	ch, ok := set.Get(l.Channel)
 	if !ok {
 		return permanent("the channel " + l.Channel + " is switched off")
 	}
@@ -311,7 +350,6 @@ func (w *Worker) generate(ctx context.Context, job store.ClaimJobRow) error {
 	if err != nil {
 		return err
 	}
-	t := func(s string, n int) pgtype.Text { return pgtype.Text{String: clip(s, n), Valid: true} }
 	return listings.InTx(ctx, w.pool, func(tq *store.Queries) error {
 		cur, err := tq.GetAttributes(ctx, job.ProductID)
 		if err != nil {
@@ -320,21 +358,17 @@ func (w *Worker) generate(ctx context.Context, job store.ClaimJobRow) error {
 		if cur.Revision != job.AttributesRevision.Int32 {
 			return generation.EnqueueGenerate(ctx, tq, job.RunID, job.ProductID, l.ID, cur.Revision)
 		}
-		if _, err := tq.WriteGenerated(ctx, store.WriteGeneratedParams{
-			ID: l.ID, Title: t(text.Title, fieldMax["title"]),
-			Bullet1: t(text.Bullets[0], 1000), Bullet2: t(text.Bullets[1], 1000), Bullet3: t(text.Bullets[2], 1000),
-			Bullet4: t(text.Bullets[3], 1000), Bullet5: t(text.Bullets[4], 1000), Description: t(text.Description, fieldMax["description"]),
-		}); err != nil {
-			return fmt.Errorf("write listing: %w", err)
+		if err := writeListing(ctx, tq, l.ID, text); err != nil {
+			return err
 		}
-		_, _, err = listings.Revalidate(ctx, tq, w.channels, l.ID)
+		_, _, err = listings.Revalidate(ctx, tq, set, l.ID)
 		return err
 	})
 }
 
 // regenerate rewrites one field; the result applies only if the field still
 // holds the value the reviewer saw when asking (D12), else it is superseded.
-func (w *Worker) regenerate(ctx context.Context, job store.ClaimJobRow) error {
+func (w *Worker) regenerate(ctx context.Context, job store.ClaimJobRow, set channels.Set) error {
 	q := store.New(w.pool)
 	rg, err := q.GetRegeneration(ctx, job.RegenerationRequestID.Int64)
 	if err != nil {
@@ -344,7 +378,7 @@ func (w *Worker) regenerate(ctx context.Context, job store.ClaimJobRow) error {
 	if err != nil {
 		return fmt.Errorf("load listing: %w", err)
 	}
-	ch, ok := w.channels.Get(l.Channel)
+	ch, ok := set.Get(l.Channel)
 	if !ok {
 		return permanent("the channel " + l.Channel + " is switched off")
 	}
@@ -376,7 +410,7 @@ func (w *Worker) regenerate(ctx context.Context, job store.ClaimJobRow) error {
 		case err != nil:
 			return fmt.Errorf("apply regeneration: %w", err)
 		default:
-			if _, _, err := listings.Revalidate(ctx, tq, w.channels, rg.ListingID); err != nil {
+			if _, _, err := listings.Revalidate(ctx, tq, set, rg.ListingID); err != nil {
 				return err
 			}
 		}

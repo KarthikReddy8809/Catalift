@@ -18,6 +18,8 @@ type Config struct {
 	DataDir string
 	// ChannelsDir holds the channel rule files (REQ-017).
 	ChannelsDir string
+	// CategoriesFile lists the product categories the upload accepts.
+	CategoriesFile string
 	// OpenRouterKey selects the real AI provider; empty means the local
 	// stand-in, which costs nothing (development and demos without a key).
 	OpenRouterKey string
@@ -31,13 +33,14 @@ type Config struct {
 func Load() (Config, error) {
 	var problems []string
 	c := Config{
-		Port:          envOr("PORT", "8080"),
-		DatabaseURL:   os.Getenv("DATABASE_URL"),
-		DataDir:       envOr("DATA_DIR", "data"),
-		ChannelsDir:   envOr("CHANNELS_DIR", "config/channels"),
-		OpenRouterKey: os.Getenv("OPENROUTER_API_KEY"),
-		AIModel:       envOr("AI_MODEL", "anthropic/claude-haiku-4.5"),
-		SecureCookies: envOr("SECURE_COOKIES", "true") != "false",
+		Port:           envOr("PORT", "8080"),
+		DatabaseURL:    os.Getenv("DATABASE_URL"),
+		DataDir:        envOr("DATA_DIR", "data"),
+		ChannelsDir:    envOr("CHANNELS_DIR", "config/channels"),
+		CategoriesFile: envOr("CATEGORIES_FILE", "config/categories.yaml"),
+		OpenRouterKey:  os.Getenv("OPENROUTER_API_KEY"),
+		AIModel:        envOr("AI_MODEL", "anthropic/claude-haiku-4.5"),
+		SecureCookies:  envOr("SECURE_COOKIES", "true") != "false",
 	}
 	switch strings.ToLower(envOr("LOG_LEVEL", "info")) {
 	case "debug":

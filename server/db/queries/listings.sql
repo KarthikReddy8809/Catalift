@@ -12,6 +12,7 @@ FROM product_attributes WHERE product_id = $1;
 -- name: SetDetectionDone :one
 UPDATE product_attributes
 SET detection_status = 'done', colour = $2, pattern = $3, sleeve = $4, neckline = $5, fit = $6,
+    detection_confidence = sqlc.narg(confidence)::real,
     detection_error = NULL, revision = revision + 1, updated_at = now()
 WHERE product_id = $1
 RETURNING revision;
@@ -34,6 +35,8 @@ SET colour = coalesce(sqlc.narg(colour), colour),
     neckline = coalesce(sqlc.narg(neckline), neckline),
     fit = coalesce(sqlc.narg(fit), fit),
     corrected_by = sqlc.arg(corrected_by),
+    -- A reviewer's correction is certain; it leaves the low-confidence list.
+    detection_confidence = NULL,
     revision = revision + 1,
     updated_at = now()
 WHERE product_id = sqlc.arg(product_id) AND revision = sqlc.arg(expected_revision)
@@ -170,6 +173,7 @@ WHERE (sqlc.narg(channel)::text IS NULL OR l.channel = sqlc.narg(channel))
   AND (sqlc.narg(rule_status)::rule_status IS NULL OR l.rule_status = sqlc.narg(rule_status))
   AND (sqlc.narg(approved)::boolean IS NULL OR (a.approved_at IS NOT NULL) = sqlc.narg(approved))
   AND (sqlc.narg(listing_id)::bigint IS NULL OR l.id = sqlc.narg(listing_id))
+  AND (sqlc.narg(upload_id)::bigint IS NULL OR p.upload_id = sqlc.narg(upload_id))
   AND (lower(p.sku), l.channel) > (lower(sqlc.arg(after_sku)::text), sqlc.arg(after_channel)::text)
 ORDER BY lower(p.sku), l.channel
 LIMIT sqlc.arg(page_size);
@@ -210,3 +214,14 @@ VALUES ($1, $2, $3, $4);
 -- name: LatestRechecks :many
 SELECT DISTINCT ON (channel) channel, config_hash, listings_rechecked, approvals_cleared, created_at
 FROM config_rechecks ORDER BY channel, created_at DESC;
+
+-- name: ForceDetectionPending :exec
+UPDATE product_attributes
+SET detection_status = 'pending', detection_error = NULL, updated_at = now()
+WHERE product_id = $1;
+
+-- name: RequeueProductListings :exec
+-- A re-run rewrites every channel's listing; the version rises so no older
+-- approval can match the new text.
+UPDATE listings SET status = 'queued', failure_reason = NULL, version = version + 1, updated_at = now()
+WHERE product_id = $1;

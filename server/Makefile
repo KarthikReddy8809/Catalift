@@ -114,11 +114,16 @@ db: ## Start Postgres in Docker
 db-reset: ## Drop and recreate the local database (destructive)
 	$(COMPOSE) down -v && $(COMPOSE) up -d postgres
 
-migrate: ## goose up
-	goose -dir db/migrations postgres "$(DATABASE_URL)" up
+# The database targets read ../.env as make dev does, so migrations land in
+# the database the API and worker use. The URL printed drops the password.
+WITH_ENV = set -a; [ -f ../.env ] && . ../.env; set +a; db="$${DATABASE_URL:-$(DATABASE_URL)}"; \
+	echo "database: $$(printf '%s' "$$db" | sed -E 's|//[^@]*@|//|')"
 
-migrate-down: ## goose down one
-	goose -dir db/migrations postgres "$(DATABASE_URL)" down
+migrate: ## goose up (reads ../.env like make dev)
+	@$(WITH_ENV); goose -dir db/migrations postgres "$$db" up
+
+migrate-down: ## goose down one (reads ../.env like make dev)
+	@$(WITH_ENV); goose -dir db/migrations postgres "$$db" down
 
 migrate-verify: ## Every Down runs and restores the schema: up, snapshot, down, up, snapshot, diff (a CI step; needs psql)
 	@command -v psql >/dev/null || { echo "migrate-verify: psql not installed (postgresql-client), nothing checked" >&2; exit 1; }; \
@@ -134,14 +139,14 @@ migrate-verify: ## Every Down runs and restores the schema: up, snapshot, down, 
 	diff -u $(STATE)/schema-up.txt $(STATE)/schema-all.txt || { echo "migrate-verify: running every Down and every Up again changed the schema" >&2; exit 1; }; \
 	echo "migrate-verify: $$n migrations, every Down ran, $$o schema objects identical after down and up"
 
-migrate-status: ## goose status
-	goose -dir db/migrations postgres "$(DATABASE_URL)" status
+migrate-status: ## goose status (reads ../.env like make dev)
+	@$(WITH_ENV); goose -dir db/migrations postgres "$$db" status
 
 # Local demo accounts only; never run against prod (ground rule 4).
 DEMO_PASSWORD ?= catalift-demo-local
 seed-demo: ## Create the local demo seller and reviewer (password DEMO_PASSWORD)
-	@for who in seller reviewer; do \
-	  printf '%s' "$(DEMO_PASSWORD)" | DATABASE_URL=$(DATABASE_URL) go run ./cmd/admin create-user $$who@example.com $$who || true; \
+	@$(WITH_ENV); for who in seller reviewer; do \
+	  printf '%s' "$(DEMO_PASSWORD)" | DATABASE_URL="$$db" go run ./cmd/admin create-user $$who@example.com $$who || true; \
 	done
 
 sqlc: ## Regenerate typed queries

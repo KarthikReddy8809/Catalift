@@ -79,3 +79,51 @@ func TestLocalGenerateKeepsTheTitleLimitAndFiveBullets(t *testing.T) {
 		t.Fatalf("l=%+v err=%v", l, err)
 	}
 }
+
+func TestLocalEnrichAnswersEveryChannelInOneCall(t *testing.T) {
+	prompt := EnrichPrompt(
+		Product{SKU: "KU-1", Brand: "Indigo Loom", Category: "kurta"},
+		[]ChannelBrief{
+			{ID: "amazon_style", Name: "Amazon-style", TitleMaxLength: 40, BannedWords: []string{"sale"}},
+			{ID: "own_website", Name: "Own website", TitleMaxLength: 120},
+		},
+	)
+	resp, err := Local{}.Complete(context.Background(), Request{
+		Purpose: PurposeDetect, TemplateID: TemplateEnrich, Prompt: prompt,
+		Image: pngOf(color.RGBA{R: 22, G: 32, B: 85, A: 255}), ImageType: "image/png",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e, err := ParseEnrichment(resp.Text, []string{"amazon_style", "own_website"})
+
+	if err != nil || e.Attributes.Colour != "navy" || len(e.Listings) != 2 ||
+		len([]rune(e.Listings["amazon_style"].Title)) > 40 || e.Confidence <= 0 || e.Confidence > 1 {
+		t.Fatalf("e=%+v err=%v", e, err)
+	}
+}
+
+func TestParseEnrichmentRefusesAMissingChannel(t *testing.T) {
+	text := `{"attributes":{"colour":"navy"},"confidence":0.9,"listings":{"a":{"title":"T","bullets":["1","2","3","4","5"],"description":"D"}}}`
+
+	_, err := ParseEnrichment(text, []string{"a", "b"})
+
+	if err == nil || !strings.Contains(err.Error(), "listing for b") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestPromptsCarryTheBrandsWordsToAvoid(t *testing.T) {
+	chans := []ChannelBrief{{ID: "own_website", Name: "Own website", TitleMaxLength: 120}}
+
+	with := EnrichPrompt(Product{SKU: "KU-1", Brand: "B", Category: "kurta", AvoidWords: []string{"cheap", "best ever"}}, chans)
+	without := EnrichPrompt(Product{SKU: "KU-1", Brand: "B", Category: "kurta"}, chans)
+
+	if !strings.Contains(with, "The brand never uses these words or phrases: cheap, best ever.") {
+		t.Fatalf("words to avoid missing from the prompt:\n%s", with)
+	}
+	if strings.Contains(without, "never uses these words") {
+		t.Fatalf("a brand with no words to avoid got the line:\n%s", without)
+	}
+}

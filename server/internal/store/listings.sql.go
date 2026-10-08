@@ -76,6 +76,8 @@ SET colour = coalesce($1, colour),
     neckline = coalesce($4, neckline),
     fit = coalesce($5, fit),
     corrected_by = $6,
+    -- A reviewer's correction is certain; it leaves the low-confidence list.
+    detection_confidence = NULL,
     revision = revision + 1,
     updated_at = now()
 WHERE product_id = $7 AND revision = $8
@@ -206,6 +208,17 @@ INSERT INTO product_attributes (product_id) VALUES ($1) ON CONFLICT (product_id)
 
 func (q *Queries) EnsureAttributes(ctx context.Context, productID int64) error {
 	_, err := q.db.Exec(ctx, ensureAttributes, productID)
+	return err
+}
+
+const forceDetectionPending = `-- name: ForceDetectionPending :exec
+UPDATE product_attributes
+SET detection_status = 'pending', detection_error = NULL, updated_at = now()
+WHERE product_id = $1
+`
+
+func (q *Queries) ForceDetectionPending(ctx context.Context, productID int64) error {
+	_, err := q.db.Exec(ctx, forceDetectionPending, productID)
 	return err
 }
 
@@ -550,9 +563,10 @@ WHERE ($1::text IS NULL OR l.channel = $1)
   AND ($2::rule_status IS NULL OR l.rule_status = $2)
   AND ($3::boolean IS NULL OR (a.approved_at IS NOT NULL) = $3)
   AND ($4::bigint IS NULL OR l.id = $4)
-  AND (lower(p.sku), l.channel) > (lower($5::text), $6::text)
+  AND ($5::bigint IS NULL OR p.upload_id = $5)
+  AND (lower(p.sku), l.channel) > (lower($6::text), $7::text)
 ORDER BY lower(p.sku), l.channel
-LIMIT $7
+LIMIT $8
 `
 
 type ListGridParams struct {
@@ -560,6 +574,7 @@ type ListGridParams struct {
 	RuleStatus   NullRuleStatus `json:"rule_status"`
 	Approved     pgtype.Bool    `json:"approved"`
 	ListingID    pgtype.Int8    `json:"listing_id"`
+	UploadID     pgtype.Int8    `json:"upload_id"`
 	AfterSku     string         `json:"after_sku"`
 	AfterChannel string         `json:"after_channel"`
 	PageSize     int32          `json:"page_size"`
@@ -597,6 +612,7 @@ func (q *Queries) ListGrid(ctx context.Context, arg ListGridParams) ([]ListGridR
 		arg.RuleStatus,
 		arg.Approved,
 		arg.ListingID,
+		arg.UploadID,
 		arg.AfterSku,
 		arg.AfterChannel,
 		arg.PageSize,
@@ -810,6 +826,18 @@ func (q *Queries) QueuedListingsForProduct(ctx context.Context, productID int64)
 	return items, nil
 }
 
+const requeueProductListings = `-- name: RequeueProductListings :exec
+UPDATE listings SET status = 'queued', failure_reason = NULL, version = version + 1, updated_at = now()
+WHERE product_id = $1
+`
+
+// A re-run rewrites every channel's listing; the version rises so no older
+// approval can match the new text.
+func (q *Queries) RequeueProductListings(ctx context.Context, productID int64) error {
+	_, err := q.db.Exec(ctx, requeueProductListings, productID)
+	return err
+}
+
 const resetDetectionPending = `-- name: ResetDetectionPending :exec
 UPDATE product_attributes
 SET detection_status = 'pending', detection_error = NULL, updated_at = now()
@@ -824,18 +852,20 @@ func (q *Queries) ResetDetectionPending(ctx context.Context, productID int64) er
 const setDetectionDone = `-- name: SetDetectionDone :one
 UPDATE product_attributes
 SET detection_status = 'done', colour = $2, pattern = $3, sleeve = $4, neckline = $5, fit = $6,
+    detection_confidence = $7::real,
     detection_error = NULL, revision = revision + 1, updated_at = now()
 WHERE product_id = $1
 RETURNING revision
 `
 
 type SetDetectionDoneParams struct {
-	ProductID int64       `json:"product_id"`
-	Colour    pgtype.Text `json:"colour"`
-	Pattern   pgtype.Text `json:"pattern"`
-	Sleeve    pgtype.Text `json:"sleeve"`
-	Neckline  pgtype.Text `json:"neckline"`
-	Fit       pgtype.Text `json:"fit"`
+	ProductID  int64         `json:"product_id"`
+	Colour     pgtype.Text   `json:"colour"`
+	Pattern    pgtype.Text   `json:"pattern"`
+	Sleeve     pgtype.Text   `json:"sleeve"`
+	Neckline   pgtype.Text   `json:"neckline"`
+	Fit        pgtype.Text   `json:"fit"`
+	Confidence pgtype.Float4 `json:"confidence"`
 }
 
 func (q *Queries) SetDetectionDone(ctx context.Context, arg SetDetectionDoneParams) (int32, error) {
@@ -846,6 +876,7 @@ func (q *Queries) SetDetectionDone(ctx context.Context, arg SetDetectionDonePara
 		arg.Sleeve,
 		arg.Neckline,
 		arg.Fit,
+		arg.Confidence,
 	)
 	var revision int32
 	err := row.Scan(&revision)

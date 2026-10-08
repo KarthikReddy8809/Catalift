@@ -43,6 +43,9 @@ func run() error {
 		return fmt.Errorf("store: %w", err)
 	}
 	defer st.Close()
+	if err := st.RequireMigrations(ctx); err != nil {
+		return err
+	}
 
 	set, err := channels.LoadDir(cfg.ChannelsDir)
 	if err != nil {
@@ -55,7 +58,7 @@ func run() error {
 	gw := ai.NewGateway(st.Pool, provider(cfg), cfg.AIModel)
 	host, _ := os.Hostname() // an empty name only makes the claim less readable
 	logger.Info("worker started", "provider", gw.Provider(), "channels", set.IDs(), "concurrency", worker.Concurrency)
-	worker.New(st.Pool, gw, set, logger, fmt.Sprintf("%s:%d", host, os.Getpid())).Run(ctx)
+	worker.New(st.Pool, gw, channels.NewRegistry(set), logger, fmt.Sprintf("%s:%d", host, os.Getpid())).Run(ctx)
 	logger.Info("worker stopped")
 	return nil
 }

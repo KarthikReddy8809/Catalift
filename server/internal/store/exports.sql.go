@@ -18,6 +18,8 @@ SELECT l.channel,
          SELECT 1 FROM approvals a WHERE a.listing_id = l.id AND a.listing_version = l.version
        ))::int AS approved
 FROM listings l
+JOIN products p ON p.id = l.product_id
+WHERE ($1::bigint IS NULL OR p.upload_id = $1)
 GROUP BY l.channel
 ORDER BY l.channel
 `
@@ -28,8 +30,8 @@ type ApprovalCountsRow struct {
 	Approved int32  `json:"approved"`
 }
 
-func (q *Queries) ApprovalCounts(ctx context.Context) ([]ApprovalCountsRow, error) {
-	rows, err := q.db.Query(ctx, approvalCounts)
+func (q *Queries) ApprovalCounts(ctx context.Context, uploadID pgtype.Int8) ([]ApprovalCountsRow, error) {
+	rows, err := q.db.Query(ctx, approvalCounts, uploadID)
 	if err != nil {
 		return nil, err
 	}
@@ -55,9 +57,15 @@ FROM listings l
 JOIN products p ON p.id = l.product_id
 LEFT JOIN product_attributes pa ON pa.product_id = l.product_id
 WHERE l.channel = $1 AND l.status = 'generated'
+  AND ($2::bigint IS NULL OR p.upload_id = $2)
   AND EXISTS (SELECT 1 FROM approvals a WHERE a.listing_id = l.id AND a.listing_version = l.version)
 ORDER BY lower(p.sku)
 `
+
+type ApprovedForChannelParams struct {
+	Channel  string      `json:"channel"`
+	UploadID pgtype.Int8 `json:"upload_id"`
+}
 
 type ApprovedForChannelRow struct {
 	Sku         string      `json:"sku"`
@@ -75,8 +83,8 @@ type ApprovedForChannelRow struct {
 	Fit         pgtype.Text `json:"fit"`
 }
 
-func (q *Queries) ApprovedForChannel(ctx context.Context, channel string) ([]ApprovedForChannelRow, error) {
-	rows, err := q.db.Query(ctx, approvedForChannel, channel)
+func (q *Queries) ApprovedForChannel(ctx context.Context, arg ApprovedForChannelParams) ([]ApprovedForChannelRow, error) {
+	rows, err := q.db.Query(ctx, approvedForChannel, arg.Channel, arg.UploadID)
 	if err != nil {
 		return nil, err
 	}
@@ -110,34 +118,48 @@ func (q *Queries) ApprovedForChannel(ctx context.Context, channel string) ([]App
 }
 
 const createExport = `-- name: CreateExport :one
-INSERT INTO exports (created_by) VALUES ($1) RETURNING id, created_at
+INSERT INTO exports (created_by, upload_id) VALUES ($1, $2) RETURNING id, created_at
 `
+
+type CreateExportParams struct {
+	CreatedBy int64       `json:"created_by"`
+	UploadID  pgtype.Int8 `json:"upload_id"`
+}
 
 type CreateExportRow struct {
 	ID        int64              `json:"id"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
-func (q *Queries) CreateExport(ctx context.Context, createdBy int64) (CreateExportRow, error) {
-	row := q.db.QueryRow(ctx, createExport, createdBy)
+func (q *Queries) CreateExport(ctx context.Context, arg CreateExportParams) (CreateExportRow, error) {
+	row := q.db.QueryRow(ctx, createExport, arg.CreatedBy, arg.UploadID)
 	var i CreateExportRow
 	err := row.Scan(&i.ID, &i.CreatedAt)
 	return i, err
 }
 
 const getExport = `-- name: GetExport :one
-SELECT id, created_at FROM exports WHERE id = $1
+SELECT e.id, e.created_at, e.sent_at, u.email AS sent_by_email
+FROM exports e LEFT JOIN users u ON u.id = e.sent_by
+WHERE e.id = $1
 `
 
 type GetExportRow struct {
-	ID        int64              `json:"id"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID          int64              `json:"id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	SentAt      pgtype.Timestamptz `json:"sent_at"`
+	SentByEmail pgtype.Text        `json:"sent_by_email"`
 }
 
 func (q *Queries) GetExport(ctx context.Context, id int64) (GetExportRow, error) {
 	row := q.db.QueryRow(ctx, getExport, id)
 	var i GetExportRow
-	err := row.Scan(&i.ID, &i.CreatedAt)
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.SentAt,
+		&i.SentByEmail,
+	)
 	return i, err
 }
 
@@ -206,4 +228,78 @@ func (q *Queries) ListExportFiles(ctx context.Context, exportID int64) ([]ListEx
 		return nil, err
 	}
 	return items, nil
+}
+
+const listExports = `-- name: ListExports :many
+SELECT e.id, e.created_at, e.sent_at, u.email AS sent_by_email
+FROM exports e LEFT JOIN users u ON u.id = e.sent_by
+WHERE (NOT $1::boolean OR e.sent_at IS NOT NULL)
+  AND ($2::bigint IS NULL OR e.upload_id = $2)
+  AND ($3::bigint = 0 OR e.id < $3)
+ORDER BY e.id DESC
+LIMIT $4
+`
+
+type ListExportsParams struct {
+	SentOnly bool        `json:"sent_only"`
+	UploadID pgtype.Int8 `json:"upload_id"`
+	BeforeID int64       `json:"before_id"`
+	PageSize int32       `json:"page_size"`
+}
+
+type ListExportsRow struct {
+	ID          int64              `json:"id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	SentAt      pgtype.Timestamptz `json:"sent_at"`
+	SentByEmail pgtype.Text        `json:"sent_by_email"`
+}
+
+// Newest export first; sent_only limits it to what reviewers sent the seller.
+func (q *Queries) ListExports(ctx context.Context, arg ListExportsParams) ([]ListExportsRow, error) {
+	rows, err := q.db.Query(ctx, listExports,
+		arg.SentOnly,
+		arg.UploadID,
+		arg.BeforeID,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListExportsRow
+	for rows.Next() {
+		var i ListExportsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedAt,
+			&i.SentAt,
+			&i.SentByEmail,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const sendExport = `-- name: SendExport :execrows
+UPDATE exports SET sent_at = now(), sent_by = $1
+WHERE id = $2 AND sent_at IS NULL
+`
+
+type SendExportParams struct {
+	SentBy pgtype.Int8 `json:"sent_by"`
+	ID     int64       `json:"id"`
+}
+
+// Sends once: a second send changes nothing, so the first sender and time stay.
+func (q *Queries) SendExport(ctx context.Context, arg SendExportParams) (int64, error) {
+	result, err := q.db.Exec(ctx, sendExport, arg.SentBy, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

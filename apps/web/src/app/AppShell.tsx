@@ -13,6 +13,8 @@ function navKeyFor(pathname: string): NavKey {
   if (pathname.startsWith("/review")) return "review";
   if (pathname.startsWith("/export")) return "export";
   if (pathname.startsWith("/channels")) return "channels";
+  if (pathname.startsWith("/brands")) return "brands";
+  if (pathname.startsWith("/received")) return "received";
   return "products";
 }
 

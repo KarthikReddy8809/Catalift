@@ -16,11 +16,14 @@ import { GalleryIndex, GalleryScreen } from "@/design/Gallery";
 import { parseGallerySearch } from "@/design/registry";
 import { sessionQueryOptions } from "@/features/auth/api";
 import { SignInPage } from "@/features/auth/pages/SignInPage";
+import { BrandVoicePage } from "@/features/brands/pages/BrandVoicePage";
 import { ProductsPage } from "@/features/catalogue/pages/ProductsPage";
 import { UploadPage } from "@/features/catalogue/pages/UploadPage";
 import { ChannelsPage } from "@/features/channels/pages/ChannelsPage";
 import { ExportPage } from "@/features/exports/pages/ExportPage";
+import { ReceivedPage } from "@/features/exports/pages/ReceivedPage";
 import { ReviewPage } from "@/features/listings/pages/ReviewPage";
+import { navAllowed, type NavKey } from "@/features/shell/nav";
 
 // Code-based routes. A route that needs data adds
 // `loader: ({ context }) => context.queryClient.ensureQueryData(options)`
@@ -74,10 +77,40 @@ const appRoute = createRoute({
   component: AppShell,
 });
 
+/**
+ * onlyFor sends a role to Products when it opens a page that is not in its
+ * navigation (ADR-0012), such as a seller typing /review. The API refuses
+ * the actions anyway; this keeps the person on a page they can use.
+ */
+const onlyFor =
+  (key: NavKey) =>
+  async ({ context }: { context: { queryClient: QueryClient } }) => {
+    const session = await context.queryClient.query(sessionQueryOptions());
+    if (session && !navAllowed(session.user.role, key)) {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw redirect({ to: "/products" });
+    }
+  };
+
 const uploadRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/upload",
+  beforeLoad: onlyFor("upload"),
   component: UploadPage,
+});
+
+const brandsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/brands",
+  beforeLoad: onlyFor("brands"),
+  component: BrandVoicePage,
+});
+
+const receivedRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/received",
+  beforeLoad: onlyFor("received"),
+  component: ReceivedPage,
 });
 
 const productsRoute = createRoute({
@@ -94,24 +127,29 @@ const productsRoute = createRoute({
 const reviewRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/review",
+  beforeLoad: onlyFor("review"),
   component: ReviewPage,
 });
 
 const exportRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/export",
+  beforeLoad: onlyFor("export"),
   component: ExportPage,
 });
 
 const channelsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/channels",
+  beforeLoad: onlyFor("channels"),
   component: ChannelsPage,
 });
 
 const appTree = appRoute.addChildren([
   uploadRoute,
   productsRoute,
+  brandsRoute,
+  receivedRoute,
   reviewRoute,
   exportRoute,
   channelsRoute,

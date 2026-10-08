@@ -4,12 +4,30 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/KarthikReddy8809/catalift/server/internal/store"
 )
+
+// ErrNoUpload means nothing has been uploaded yet.
+var ErrNoUpload = errors.New("no upload yet")
+
+// LatestUpload is the newest upload's id; every screen shows only its records.
+func (s *Service) LatestUpload(ctx context.Context) (int64, error) {
+	id, err := store.New(s.pool).LatestUpload(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNoUpload
+	}
+	if err != nil {
+		return 0, fmt.Errorf("latest upload: %w", err)
+	}
+	return id, nil
+}
 
 // ErrBrandNotFound is an unknown brand id.
 var ErrBrandNotFound = errors.New("no such brand")
@@ -18,26 +36,57 @@ var ErrBrandNotFound = errors.New("no such brand")
 var ErrProductNotFound = errors.New("no such product")
 
 // Brands lists brands by name after the given name.
-func (s *Service) Brands(ctx context.Context, afterName string, limit int32) ([]store.Brand, error) {
-	rows, err := store.New(s.pool).ListBrands(ctx, store.ListBrandsParams{AfterName: afterName, PageSize: limit})
+func (s *Service) Brands(ctx context.Context, afterName string, limit int32, uploadID int64) ([]store.Brand, error) {
+	rows, err := store.New(s.pool).ListBrands(ctx, store.ListBrandsParams{
+		AfterName: afterName, PageSize: limit, UploadID: pgtype.Int8{Int64: uploadID, Valid: uploadID != 0},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list brands: %w", err)
 	}
 	return rows, nil
 }
 
-// SetVoiceNote sets or clears a brand's voice note (US-00-002).
-func (s *Service) SetVoiceNote(ctx context.Context, id int64, note *string) (store.Brand, error) {
-	v := pgtype.Text{}
-	if note != nil {
-		v = pgtype.Text{String: *note, Valid: true}
+// Brand voice limits: enough for a style guide, small enough for a prompt.
+const (
+	MaxAvoidWords   = 50
+	MaxAvoidWordLen = 60
+)
+
+// CleanAvoidWords trims the words, drops blanks and repeats (ignoring case)
+// and returns a reason when the list breaks a limit.
+func CleanAvoidWords(words []string) (clean []string, reason string) {
+	clean = []string{}
+	seen := map[string]bool{}
+	for _, w := range words {
+		w = strings.Join(strings.Fields(w), " ")
+		if w == "" || seen[strings.ToLower(w)] {
+			continue
+		}
+		if len([]rune(w)) > MaxAvoidWordLen {
+			return nil, fmt.Sprintf("each word or phrase must be at most %d characters", MaxAvoidWordLen)
+		}
+		seen[strings.ToLower(w)] = true
+		clean = append(clean, w)
 	}
-	b, err := store.New(s.pool).UpdateBrandVoice(ctx, store.UpdateBrandVoiceParams{VoiceNote: v, ID: id})
+	if len(clean) > MaxAvoidWords {
+		return nil, fmt.Sprintf("at most %d words or phrases", MaxAvoidWords)
+	}
+	return clean, ""
+}
+
+// SetBrandVoice sets the brand's tone (its voice note; nil clears it) and,
+// when words is not nil, its words to avoid (brand voice settings).
+func (s *Service) SetBrandVoice(ctx context.Context, id int64, tone *string, words []string) (store.Brand, error) {
+	v := pgtype.Text{}
+	if tone != nil {
+		v = pgtype.Text{String: *tone, Valid: true}
+	}
+	b, err := store.New(s.pool).UpdateBrandVoice(ctx, store.UpdateBrandVoiceParams{VoiceNote: v, WordsToAvoid: words, ID: id})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.Brand{}, ErrBrandNotFound
 	}
 	if err != nil {
-		return store.Brand{}, fmt.Errorf("update voice note: %w", err)
+		return store.Brand{}, fmt.Errorf("update brand voice: %w", err)
 	}
 	return b, nil
 }
@@ -87,4 +136,24 @@ func (s *Service) Product(ctx context.Context, id int64) (store.ListProductsRow,
 		return store.ListProductsRow{}, ErrProductNotFound
 	}
 	return rows[0], nil
+}
+
+// ErrNoImage means the product has no photo yet.
+var ErrNoImage = errors.New("the product has no photo")
+
+// Thumbnail opens a product's first photo as its 1024 px JPEG detection copy,
+// small enough for the review grid; the caller closes it.
+func (s *Service) Thumbnail(ctx context.Context, productID int64) (io.ReadCloser, error) {
+	img, err := store.New(s.pool).FirstImage(ctx, productID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNoImage
+	}
+	if err != nil {
+		return nil, fmt.Errorf("first image: %w", err)
+	}
+	f, err := os.Open(img.DetectionPath)
+	if err != nil {
+		return nil, fmt.Errorf("open thumbnail: %w", err)
+	}
+	return f, nil
 }
